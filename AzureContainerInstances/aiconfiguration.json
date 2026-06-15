@@ -1,0 +1,39 @@
+{
+  "ProviderConnections": {
+    "AzureAi": {
+      "Description": "Azure OpenAI / AI Foundry (sandbox). ApiKey and Endpoint are Key Vault secret NAMES, resolved at runtime via the Managed Identity.",
+      "Type": "AzureAi",
+      "ProviderConfiguration": {
+        "ApiKey": "AiAzureApiKey",
+        "Endpoint": "AiAzureEndpoint",
+        "UseDefaultAzureCredentials": false
+      }
+    }
+  },
+  "ProviderModels": [
+    {
+      "Id": "11111111-1111-1111-1111-111111111111",
+      "ConnectionName": "AzureAi",
+      "Priority": 100,
+      "Name": "Azure GPT (sandbox)",
+      "Description": "Sandbox model for the getting-started ACI test. ModelName values are your Azure deployment names.",
+      "Factor": 1.0,
+      "TextModel": {
+        "ModelName": "gpt-4o-mini"
+      },
+      "ImageModel": {
+        "ModelName": "gpt-4o-mini"
+      },
+      "AudioModel": {
+        "ModelName": "whisper"
+      },
+      "EmbeddingModel": {
+        "ModelName": "text-embedding-3-small"
+      }
+    }
+  ],
+  "AiTaskTypesConfiguration": {
+    "Concierge": [ "11111111-1111-1111-1111-111111111111" ],
+    "EmbeddingGeneration": [ "11111111-1111-1111-1111-111111111111" ]
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "_comment": "Schema for image versions 2026.1.x: MethodTypesConfiguration + models referenced by Name (no Id Guid). For 2026.2+ use aiconfiguration.json instead. To use this, copy it over aiconfiguration.json before deploy.",
+  "ProviderConnections": {
+    "AzureAi": {
+      "Description": "Azure OpenAI / AI Foundry. ApiKey and Endpoint are Key Vault secret NAMES, resolved at runtime via the Managed Identity.",
+      "Type": "AzureAi",
+      "ProviderConfiguration": {
+        "ApiKey": "AiAzureApiKey",
+        "Endpoint": "AiAzureEndpoint"
+      }
+    }
+  },
+  "ProviderModels": [
+    {
+      "ConnectionName": "AzureAi",
+      "Priority": 100,
+      "Name": "Azure GPT (sandbox)",
+      "Description": "Sandbox model. ModelName values are your Azure deployment names.",
+      "TextModel": {
+        "ModelName": "gpt-4o-mini"
+      },
+      "ImageModel": {
+        "ModelName": "gpt-4o-mini"
+      },
+      "EmbeddingModel": {
+        "ModelName": "text-embedding-3-small"
+      }
+    }
+  ],
+  "MethodTypesConfiguration": {
+    "ConciergePrompt": [ "Azure GPT (sandbox)" ],
+    "ConciergeExecuteTool": [ "Azure GPT (sandbox)" ],
+    "EmbeddingGeneration": [ "Azure GPT (sandbox)" ]
+  }
+}

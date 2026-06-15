@@ -1,0 +1,5 @@
+# Generated artifacts (certificates with private keys, secrets) - never package or commit these
+.work/
+*.pfx
+*.pem
+*.cer
