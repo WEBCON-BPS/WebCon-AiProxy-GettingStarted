@@ -22,6 +22,9 @@
       "ImageModel": {
         "ModelName": "gpt-4o-mini"
       },
+      "AudioModel": {
+        "ModelName": "whisper"
+      },
       "EmbeddingModel": {
         "ModelName": "text-embedding-3-small"
       }
