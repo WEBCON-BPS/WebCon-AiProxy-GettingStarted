@@ -31,7 +31,7 @@ param(
   [string]$AzureAiEndpoint,                         # optional; seeded into KV as AiAzureEndpoint (e.g. https://<res>.openai.azure.com/openai/v1/)
   [string]$AzureAiApiKey,                           # optional; seeded into KV as AiAzureApiKey
   [string]$CertPassword = 'Sandbox!1',              # password for the exported client PFX (Portal upload)
-  [string]$ConfigAdminAccessKey = 'sandbox-admin',  # login key for the config UI (/config-ui)
+  [string]$ConfigAdminAccessKey,                    # login key for the config UI; auto-generated (strong) if not supplied
   [string]$ImageTag = '2026.2.64.17',               # tag of the public Docker Hub image webconbps/aiproxy (pick one matching your aiconfiguration schema)
   [string]$Image,                                   # full image ref override (any registry/tag); takes precedence over -ImageTag
   [switch]$DeployFoundry,                           # also create an AI Foundry + project + models, locked to the container's IP, and wire AiAzure* secrets
@@ -67,6 +67,10 @@ $fqdn        = "$dnsLabel.$Location.azurecontainer.io"
 $acrTag      = 'gs'   # tag used when re-pushing to the new ACR (distinct from -ImageTag / Docker Hub)
 $foundryName = "aif-aiproxy-gs-$Suffix"   # AIServices account + custom subdomain (globally unique)
 $foundryProj = "aifp-gs-$Suffix"
+
+# Config UI admin key: never ship a known default - generate a strong random one unless supplied.
+$generatedAdminKey = [string]::IsNullOrWhiteSpace($ConfigAdminAccessKey)
+if ($generatedAdminKey) { $ConfigAdminAccessKey = [guid]::NewGuid().ToString('N') }
 
 Write-Information "Subscription : $SubscriptionId"
 Write-Information "Resource grp : $rg ($Location)"
@@ -205,7 +209,8 @@ Write-Host "Health (with client cert)                   : $endpoint/health"
 Write-Host "Cert thumbprint (must match in Portal)      : $thumbprint"
 Write-Host "Client cert for Portal upload               : $clientPfx  (password: $CertPassword)"
 Write-Host "                                              $certPem  (PEM with private key)"
-Write-Host "Config UI (browser)                         : $endpoint/config-ui   (access key: $ConfigAdminAccessKey)"
+Write-Host "Config UI (browser)                         : $endpoint/config-ui"
+Write-Host ("  access key$(if($generatedAdminKey){' (auto-generated - save it!)'}else{''}): $ConfigAdminAccessKey") -ForegroundColor $(if($generatedAdminKey){'Yellow'}else{'Gray'})
 Write-Host ""
 Write-Host "WEBCON Portal (Studio) configuration:" -ForegroundColor Cyan
 Write-Host "  1. AI mode: SelfHosted AI Proxy (global param UseAITokenLicense)."

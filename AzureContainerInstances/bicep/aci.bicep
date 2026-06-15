@@ -167,14 +167,12 @@ resource resAci 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
     ipAddress: {
       type: 'Public'
       dnsNameLabel: parDnsNameLabel
+      // Expose ONLY 8081 (HTTPS/mTLS) publicly. 8080 (plain HTTP, no mTLS) stays a container-internal
+      // port so the Config UI / health are never reachable over unencrypted, cert-less HTTP from the internet.
       ports: [
         {
           protocol: 'TCP'
           port: 8081
-        }
-        {
-          protocol: 'TCP'
-          port: 8080
         }
       ]
     }

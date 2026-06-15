@@ -3,3 +3,6 @@
 *.pfx
 *.pem
 *.cer
+
+# Compiled Bicep output (az bicep build) - templates live as .bicep, not committed JSON
+**/bicep/*.json

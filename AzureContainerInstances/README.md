@@ -44,7 +44,7 @@ rg-aiproxy-gs-<suffix>
 ├─ User-assigned Managed Identity    AcrPull on the ACR + Key Vault Secrets User on the KV
 ├─ Key Vault                         aiproxy-certificate-pem (JWT signing key + TLS cert),
 │                                    AiAzureEndpoint, AiAzureApiKey
-├─ Container Instance (public FQDN)  the AI Proxy — ports 8081 (HTTPS/mTLS) and 8080
+├─ Container Instance (public FQDN)  the AI Proxy — only port 8081 (HTTPS/mTLS) is public; 8080 (HTTP) stays internal
 └─ AI Foundry + project + models     OPTIONAL (-DeployFoundry): gpt-4o-mini + text-embedding-3-small,
                                      firewalled so only the container can reach it
 ```
@@ -131,7 +131,7 @@ thumbprint**, the **client certificate** to upload to the Portal, and the **Conf
 | `-SmokeTest` | off | Run the mTLS health checks at the end |
 | `-Suffix <s>` | from subscription id | Distinguishes resource names (must be globally unique-ish) |
 | `-Location <region>` | `polandcentral` | Region for the RG / ACR / KV / ACI |
-| `-ConfigAdminAccessKey` | `sandbox-admin` | Login key for the Config UI (`/config-ui`) |
+| `-ConfigAdminAccessKey` | auto-generated (strong, random) | Login key for the Config UI (`/config-ui`); the script prints it. Pass your own to set a fixed value. |
 | `-CertPassword` | `Sandbox!1` | Password for the exported client `.pfx` |
 
 ### Match `aiconfiguration.json` to the image version
@@ -212,8 +212,9 @@ drive the whole flow from a browser on the same machine:
 - **client cert (`.pfx`) → `CurrentUser\My`** — the browser can present it for mTLS.
 
 Then open:
-- `https://<fqdn>:8081/config-ui` — the Config UI (this path is exempt from client-cert enforcement;
-  log in with `-ConfigAdminAccessKey`, default `sandbox-admin`).
+- `https://<fqdn>:8081/config-ui` — the Config UI over HTTPS (this path is exempt from client-cert
+  enforcement; log in with the access key the deploy printed, or your own `-ConfigAdminAccessKey`).
+  Plain-HTTP `:8080` is **not** exposed publicly, so the panel is never reachable unencrypted.
 - any mTLS-protected endpoint — the browser will prompt you to choose the client certificate.
 
 `teardown.ps1` removes these certs from your store again (unless you pass `-KeepLocalCerts`).
