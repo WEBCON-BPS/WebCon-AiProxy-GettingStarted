@@ -86,7 +86,7 @@ Invoke-Native { docker pull $baseImage }
 $localFinal = "aiproxy-gs:local"
 Write-Information "Baking aiconfiguration.json onto $baseImage -> $localFinal"
 Write-Information "  (make sure aiconfiguration.json matches the image's schema - see README: 2026.1 vs 2026.2)"
-Invoke-Native { docker build --build-arg BASE_IMAGE=$baseImage -f (Join-Path $here 'Dockerfile.config') -t $localFinal $here }
+Invoke-Native { docker build --build-arg BASE_IMAGE=$baseImage -f (Join-Path $here 'config/Dockerfile.config') -t $localFinal (Join-Path $here 'config') }
 
 # --- 3. infra.bicep ----------------------------------------------------------
 $deployerObjectId = az ad signed-in-user show --query id -o tsv
@@ -95,7 +95,7 @@ if ($LASTEXITCODE -ne 0 -or -not $deployerObjectId) { throw "Could not resolve s
 Write-Information "Deploying infra.bicep (ACR + MI + Key Vault + roles)..."
 Invoke-Native {
   az deployment group create -g $rg -n infra-aiproxy-gs `
-    --template-file (Join-Path $here 'infra.bicep') `
+    --template-file (Join-Path $here 'bicep/infra.bicep') `
     --parameters parAcrName=$acrName parMiName=$miName parKvName=$kvName `
                  parDeployerObjectId=$deployerObjectId parLocation=$Location | Out-Null
 }
@@ -160,7 +160,7 @@ if ($DeployFoundry) {
   Write-Information "Deploying foundry.bicep (AI Foundry + project + models)... this can take a few minutes."
   Invoke-Native {
     az deployment group create -g $rg -n foundry-aiproxy-gs `
-      --template-file (Join-Path $here 'foundry.bicep') `
+      --template-file (Join-Path $here 'bicep/foundry.bicep') `
       --parameters parAccountName=$foundryName parProjectName=$foundryProj parKvName=$kvName `
                    parMiPrincipalId=$miPrincipalId parLocation=$FoundryLocation | Out-Null
   }
@@ -179,7 +179,7 @@ $certB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($certPem))
 Write-Information "Deploying aci.bicep (container)..."
 Invoke-Native {
   az deployment group create -g $rg -n aci-aiproxy-gs `
-    --template-file (Join-Path $here 'aci.bicep') `
+    --template-file (Join-Path $here 'bicep/aci.bicep') `
     --parameters parAciName=$aciName parImage=$acrImage parAcrLoginServer=$acrLoginServer `
                  parMiId=$miId parMiClientId=$miClientId parKvUri=$kvUri `
                  parDnsNameLabel=$dnsLabel parLocation=$Location parCertPemBase64=$certB64 `

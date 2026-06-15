@@ -138,19 +138,19 @@ thumbprint**, the **client certificate** to upload to the Portal, and the **Conf
 
 The provider-config schema changed between releases. Use the file that matches your `-ImageTag`:
 
-| Image tag | File to use | Schema |
+| Image tag | File to use (`config/`) | Schema |
 |---|---|---|
-| **2026.2.x** (default) | `aiconfiguration.json` | `AiTaskTypesConfiguration` + models with `Id` |
-| **2026.1.x** | copy `aiconfiguration.2026.1.json` over `aiconfiguration.json` first | `MethodTypesConfiguration` + models by `Name` |
+| **2026.2.x** (default) | `config/aiconfiguration.json` | `AiTaskTypesConfiguration` + models with `Id` |
+| **2026.1.x** | copy `config/aiconfiguration.2026.1.json` over `config/aiconfiguration.json` first | `MethodTypesConfiguration` + models by `Name` |
 
 ```powershell
 # for a 2026.1 image:
-Copy-Item aiconfiguration.2026.1.json aiconfiguration.json -Force
+Copy-Item config/aiconfiguration.2026.1.json config/aiconfiguration.json -Force
 ./deploy.ps1 -ImageTag "2026.1.27.108" -SmokeTest
 ```
 
-`Dockerfile.config` always bakes the file literally named `aiconfiguration.json`. With Key Vault it
-holds only secret **names** (e.g. `AiAzureApiKey`), so it never contains real secrets.
+`Dockerfile.config` always bakes the file literally named `aiconfiguration.json` (from `config/`).
+With Key Vault it holds only secret **names** (e.g. `AiAzureApiKey`), so it never contains real secrets.
 
 ---
 
@@ -295,17 +295,22 @@ Deletes the resource group and removes the locally-installed certs. Key Vault an
 
 ## Repo layout
 
-| File | Purpose |
-|---|---|
-| `deploy.ps1` | one-command deploy (image pull → infra → cert → optional Foundry → container → smoke test) |
-| `teardown.ps1` | delete the resource group + clean up local certs |
-| `infra.bicep` | Container Registry + Managed Identity + Key Vault + role assignments |
-| `aci.bicep` | the Container Instance (env, cert `secret` volume, MI, public FQDN) |
-| `foundry.bicep` | optional AI Foundry + project + models, firewalled to the container |
-| `aiconfiguration.json` | provider config — **2026.2** schema |
-| `aiconfiguration.2026.1.json` | provider config — **2026.1.x** schema |
-| `Dockerfile.config` | thin layer that bakes `aiconfiguration.json` onto the base image |
-| `.gitignore` | keeps generated secrets (`.work/`, `*.pfx`/`*.pem`/`*.cer`) out of the repo |
+```
+AzureContainerInstances/
+├── deploy.ps1                       one-command deploy (image → infra → cert → optional Foundry → container → smoke test)
+├── teardown.ps1                     delete the resource group + clean up local certs
+├── bicep/
+│   ├── infra.bicep                  Container Registry + Managed Identity + Key Vault + role assignments
+│   ├── aci.bicep                    the Container Instance (env, cert `secret` volume, MI, public FQDN)
+│   └── foundry.bicep                optional AI Foundry + project + models, firewalled to the container
+└── config/
+    ├── Dockerfile.config            thin layer that bakes aiconfiguration.json onto the base image
+    ├── aiconfiguration.json         provider config — 2026.2 schema (AiTaskTypesConfiguration + Id)
+    └── aiconfiguration.2026.1.json  provider config — 2026.1.x schema (MethodTypesConfiguration + Name)
+```
+
+Generated certificates/secrets land in `.work/` (created at deploy time) and are kept out of git by
+the repo-root `.gitignore`.
 
 ---
 
