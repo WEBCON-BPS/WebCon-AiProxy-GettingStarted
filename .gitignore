@@ -4,5 +4,8 @@
 *.pem
 *.cer
 
+# docker compose env file rendered by deploy.ps1 (holds the Config UI admin key)
+.env
+
 # Compiled Bicep output (az bicep build) - templates live as .bicep, not committed JSON
 **/bicep/*.json

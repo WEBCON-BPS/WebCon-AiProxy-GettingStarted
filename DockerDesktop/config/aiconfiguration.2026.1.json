@@ -1,0 +1,37 @@
+{
+  "_comment": "Schema for image versions 2026.1.x: MethodTypesConfiguration + models referenced by Name (no Id Guid). For 2026.2+ use aiconfiguration.json instead. To use this, copy it over aiconfiguration.json before deploy. NO Key Vault: with UseAzureKeyVault=false the ApiKey below is the LITERAL OpenAI key; deploy.ps1 injects your -OpenAiApiKey into the ApiKey placeholder and writes .work/aiconfiguration.json (git-ignored).",
+  "ProviderConnections": {
+    "OpenAi": {
+      "Description": "OpenAI (api.openai.com). ApiKey is the real key because Key Vault is disabled in this sandbox.",
+      "Type": "OpenAi",
+      "ProviderConfiguration": {
+        "ApiKey": "__OPENAI_API_KEY__"
+      }
+    }
+  },
+  "ProviderModels": [
+    {
+      "ConnectionName": "OpenAi",
+      "Priority": 100,
+      "Name": "OpenAI (sandbox)",
+      "Description": "Sandbox model. ModelName values are OpenAI model ids.",
+      "TextModel": {
+        "ModelName": "gpt-4o-mini"
+      },
+      "ImageModel": {
+        "ModelName": "gpt-4o-mini"
+      },
+      "AudioModel": {
+        "ModelName": "whisper-1"
+      },
+      "EmbeddingModel": {
+        "ModelName": "text-embedding-3-small"
+      }
+    }
+  ],
+  "MethodTypesConfiguration": {
+    "ConciergePrompt": [ "OpenAI (sandbox)" ],
+    "ConciergeExecuteTool": [ "OpenAI (sandbox)" ],
+    "EmbeddingGeneration": [ "OpenAI (sandbox)" ]
+  }
+}
