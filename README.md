@@ -15,9 +15,16 @@ compute target.
 > More compute targets (e.g. a VM-based, fully network-private variant) can be added as sibling
 > folders following the same pattern.
 
+Both scenarios default to image **`2026.2.135.35`**, which ships the **web Config UI** for editing AI
+providers, connections, and models (always on in SelfHosted mode) and the per-connection
+`TimeoutSeconds` fail-over timeout. Open the UI over the HTTPS endpoint at `/config-ui` (e.g.
+`https://localhost:7033/config-ui` for DockerDesktop; the HTTP port redirects to HTTPS). See each
+scenario's README for details.
+
 ## Common prerequisites
 
-- **Docker** (running) and **OpenSSL** — required by both scenarios.
+- **Docker** (running) and **OpenSSL** — required by both scenarios. If OpenSSL is not on `PATH`, the
+  deploy scripts fall back to the copy bundled with **Git for Windows**.
 - **Azure CLI** logged in (`az login`) as **Owner** on the target subscription — only for the
   **AzureContainerInstances** scenario.
 

@@ -16,7 +16,7 @@
   Prerequisites: az CLI (logged in), Docker, openssl. No source build / SDK needed.
 
 .EXAMPLE
-  # Default image (webconbps/aiproxy:2026.2.64.17), mTLS/Portal test, install certs locally:
+  # Default image (webconbps/aiproxy:2026.2.135.35), mTLS/Portal test, install certs locally:
   ./deploy.ps1 -SmokeTest -InstallCertLocally
 
   # Pin a different tag + a working AzureAi provider (remember to match the aiconfiguration schema):
@@ -32,7 +32,7 @@ param(
   [string]$AzureAiApiKey,                           # optional; seeded into KV as AiAzureApiKey
   [string]$CertPassword = 'Sandbox!1',              # password for the exported client PFX (Portal upload)
   [string]$ConfigAdminAccessKey,                    # login key for the config UI; auto-generated (strong) if not supplied
-  [string]$ImageTag = '2026.2.64.17',               # tag of the public Docker Hub image webconbps/aiproxy (pick one matching your aiconfiguration schema)
+  [string]$ImageTag = '2026.2.135.35',              # tag of the public Docker Hub image webconbps/aiproxy (pick one matching your aiconfiguration schema)
   [string]$Image,                                   # full image ref override (any registry/tag); takes precedence over -ImageTag
   [switch]$DeployFoundry,                           # also create an AI Foundry + project + models, locked to the container's IP, and wire AiAzure* secrets
   [string]$FoundryLocation = 'swedencentral',       # region for the AI Foundry account (must offer the chosen models)
@@ -49,6 +49,18 @@ function Invoke-Native { param([scriptblock]$Cmd) & $Cmd; if ($LASTEXITCODE -ne 
 $here     = $PSScriptRoot
 $workDir  = Join-Path $here '.work'
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+
+# openssl: prefer PATH; otherwise fall back to the copy bundled with Git for Windows (not on PATH by default).
+$openssl = (Get-Command openssl -ErrorAction SilentlyContinue).Source
+if (-not $openssl) {
+  $openssl = @(
+    "$env:ProgramFiles\Git\mingw64\bin\openssl.exe",
+    "$env:ProgramFiles\Git\usr\bin\openssl.exe",
+    "${env:ProgramFiles(x86)}\Git\mingw64\bin\openssl.exe",
+    "$env:LOCALAPPDATA\Programs\Git\mingw64\bin\openssl.exe"
+  ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $openssl) { throw "'openssl' was not found on PATH or in a Git for Windows install. Install OpenSSL (or Git for Windows) and retry." }
 
 if (-not $SubscriptionId) { $SubscriptionId = az account show --query id -o tsv }
 if ($LASTEXITCODE -ne 0 -or -not $SubscriptionId) { throw "Not logged into az. Run 'az login' first." }
@@ -132,16 +144,16 @@ if ((Test-Path $certPem) -and (Test-Path $clientPfx)) {
 } else {
   Write-Information "Generating self-signed cert (CN=$fqdn, PKCS#8 key)..."
   Invoke-Native {
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout $keyPem -out $crtPem -days 365 `
+    & $openssl req -x509 -newkey rsa:2048 -nodes -keyout $keyPem -out $crtPem -days 365 `
       -subj "/CN=$fqdn" -addext "subjectAltName=DNS:$fqdn,DNS:localhost"
   }
   Get-Content $crtPem, $keyPem | Set-Content -Encoding ascii $certPem
-  Invoke-Native { openssl pkcs12 -export -out $clientPfx -inkey $keyPem -in $crtPem -passout "pass:$CertPassword" }
+  Invoke-Native { & $openssl pkcs12 -export -out $clientPfx -inkey $keyPem -in $crtPem -passout "pass:$CertPassword" }
 }
 
 # Public DER cert for local Trusted-Root install (derive from the combined PEM if missing)
 if (-not (Test-Path $serverCer)) {
-  Invoke-Native { openssl x509 -in $certPem -outform der -out $serverCer }
+  Invoke-Native { & $openssl x509 -in $certPem -outform der -out $serverCer }
 }
 
 $thumbprint = ([System.Security.Cryptography.X509Certificates.X509Certificate2]::new($clientPfx, $CertPassword)).Thumbprint
@@ -211,6 +223,7 @@ Write-Host "Client cert for Portal upload               : $clientPfx  (password:
 Write-Host "                                              $certPem  (PEM with private key)"
 Write-Host "Config UI (browser)                         : $endpoint/config-ui"
 Write-Host ("  access key$(if($generatedAdminKey){' (auto-generated - save it!)'}else{''}): $ConfigAdminAccessKey") -ForegroundColor $(if($generatedAdminKey){'Yellow'}else{'Gray'})
+Write-Host "  (trust the certs first with -InstallCertLocally; dismiss the client-cert prompt - /config-ui does not require it)"
 Write-Host ""
 Write-Host "WEBCON Portal (Studio) configuration:" -ForegroundColor Cyan
 Write-Host "  1. AI mode: SelfHosted AI Proxy (global param UseAITokenLicense)."
