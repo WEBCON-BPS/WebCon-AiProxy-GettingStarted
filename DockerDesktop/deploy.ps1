@@ -9,7 +9,7 @@
        It is used BOTH as the TLS server cert AND as the JWT signing key.
     2. Render aiconfiguration.json with your real OpenAI key -> .work\ (git-ignored).
        With Key Vault disabled, the proxy reads the key value literally from this file.
-    3. Write .env (image tag + random Config UI key + ports).
+    3. Write .env (image tag + random Config UI access key + ports).
     4. docker compose up -d  (pulls the public image webconbps/aiproxy).
     5. Optionally import the certs locally and run an mTLS smoke test.
 
@@ -30,12 +30,12 @@ param(
   [string]$OpenAiApiKey,                            # real OpenAI key (sk-...). Written into .work\aiconfiguration.json, never committed.
   [string]$Model = 'gpt-4o-mini',                   # OpenAI text/image model id (replaces the default gpt-4o-mini in the template)
   [string]$EmbeddingModel = 'text-embedding-3-small', # OpenAI embedding model id
-  [string]$ImageTag = '2026.2.64.17',               # tag of the public Docker Hub image webconbps/aiproxy (match the aiconfiguration schema)
+  [string]$ImageTag = '2026.2.135.35',              # tag of the public Docker Hub image webconbps/aiproxy (match the aiconfiguration schema)
   [string]$Image,                                   # full image ref override (any registry/tag); takes precedence over -ImageTag
   [string]$CertPassword = 'Sandbox!1',              # password for the exported client PFX (Portal upload)
-  [string]$ConfigAdminAccessKey,                    # login key for the Config UI; auto-generated (strong) if not supplied
+  [string]$ConfigAdminAccessKey,                    # login key for the Config UI (/config-ui); auto-generated (strong) if not supplied
   [int]$HttpsPort = 7033,                            # host port -> container 8081 (HTTPS / mTLS; the Portal endpoint)
-  [int]$HttpPort  = 5298,                            # host port -> container 8080 (plain HTTP; redirects to HTTPS, kept for the future Config UI)
+  [int]$HttpPort  = 5298,                            # host port -> container 8080 (plain HTTP; serves the browser Config UI at /config-ui)
   [switch]$InstallCertLocally,                      # import server cert -> CurrentUser\Root and client cert -> CurrentUser\My (UI testing)
   [switch]$SmokeTest                                # run mTLS tests after the container starts
 )
@@ -51,9 +51,20 @@ $workDir = Join-Path $here '.work'
 $compose = Join-Path $here 'docker-compose.yml'
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 
-foreach ($tool in 'docker', 'openssl') {
-  if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "'$tool' was not found on PATH. Install it and retry." }
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw "'docker' was not found on PATH. Install Docker Desktop and retry." }
+
+# openssl: prefer PATH; otherwise fall back to the copy bundled with Git for Windows (not on PATH by default).
+$openssl = (Get-Command openssl -ErrorAction SilentlyContinue).Source
+if (-not $openssl) {
+  $openssl = @(
+    "$env:ProgramFiles\Git\mingw64\bin\openssl.exe",
+    "$env:ProgramFiles\Git\usr\bin\openssl.exe",
+    "${env:ProgramFiles(x86)}\Git\mingw64\bin\openssl.exe",
+    "$env:LOCALAPPDATA\Programs\Git\mingw64\bin\openssl.exe"
+  ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
+if (-not $openssl) { throw "'openssl' was not found on PATH or in a Git for Windows install. Install OpenSSL (or Git for Windows) and retry." }
+
 # 'docker compose' (v2) must be available
 & docker compose version *> $null
 if ($LASTEXITCODE -ne 0) { throw "'docker compose' (Compose v2) is not available. Update Docker Desktop." }
@@ -67,7 +78,7 @@ if ($generatedAdminKey) { $ConfigAdminAccessKey = [guid]::NewGuid().ToString('N'
 
 Write-Information "Image        : $image"
 Write-Information "Endpoint     : $endpoint   (mTLS)"
-Write-Information "HTTP (local) : http://localhost:$HttpPort   (redirects to HTTPS; web Config UI ships in a later image)"
+Write-Information "HTTP (local) : http://localhost:$HttpPort   (redirects to HTTPS; use the HTTPS URL for the Config UI)"
 
 # --- 1. Self-signed cert (combined cert + PKCS#8 key PEM) --------------------
 # CredentialsHelper reads the JWT signing key from this PEM via BouncyCastle, which only
@@ -86,7 +97,7 @@ if ((Test-Path $certPem) -and (Test-Path $clientPfx)) {
   # serverAuth+clientAuth EKU: the same cert is used as the TLS server cert AND as the
   # client cert; without clientAuth, Windows/Edge may not offer it in the cert picker.
   Invoke-Native {
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout $keyPem -out $crtPem -days 365 `
+    & $openssl req -x509 -newkey rsa:2048 -nodes -keyout $keyPem -out $crtPem -days 365 `
       -subj "/CN=localhost" `
       -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" `
       -addext "basicConstraints=critical,CA:FALSE" `
@@ -94,10 +105,10 @@ if ((Test-Path $certPem) -and (Test-Path $clientPfx)) {
       -addext "extendedKeyUsage=serverAuth,clientAuth"
   }
   Get-Content $crtPem, $keyPem | Set-Content -Encoding ascii $certPem
-  Invoke-Native { openssl pkcs12 -export -out $clientPfx -inkey $keyPem -in $crtPem -passout "pass:$CertPassword" }
+  Invoke-Native { & $openssl pkcs12 -export -out $clientPfx -inkey $keyPem -in $crtPem -passout "pass:$CertPassword" }
 }
 if (-not (Test-Path $serverCer)) {
-  Invoke-Native { openssl x509 -in $certPem -outform der -out $serverCer }
+  Invoke-Native { & $openssl x509 -in $certPem -outform der -out $serverCer }
 }
 
 $cert       = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($clientPfx, $CertPassword)
@@ -146,8 +157,9 @@ Write-Host "Health (with client cert)                   : $endpoint/health"
 Write-Host "Cert thumbprint (must match in Portal)      : $thumbprint"
 Write-Host "Client cert for Portal upload               : $clientPfx  (password: $CertPassword)"
 Write-Host "                                              $certPem  (PEM with private key)"
-Write-Host ("Config UI access key (future image)         : $ConfigAdminAccessKey$(if($generatedAdminKey){'  (auto-generated - save it!)'}else{''})") -ForegroundColor $(if($generatedAdminKey){'Yellow'}else{'Gray'})
-Write-Host "  (the web Config UI / config-ui ships in a later image; until then, edit .work\aiconfiguration.json)"
+Write-Host "Config UI (browser)                         : https://localhost:$HttpsPort/config-ui  (HTTPS; run with -InstallCertLocally to avoid the TLS warning)"
+Write-Host ("  access key$(if($generatedAdminKey){' (auto-generated - save it!)'}else{''}): $ConfigAdminAccessKey") -ForegroundColor $(if($generatedAdminKey){'Yellow'}else{'Gray'})
+Write-Host "  (dismiss the client-cert prompt - /config-ui does not need it. Edits write .work\aiconfiguration.json and hot-reload; or edit the file + 'docker compose restart'.)"
 Write-Host ""
 Write-Host "WEBCON Portal (Studio) configuration:" -ForegroundColor Cyan
 Write-Host "  1. AI mode: SelfHosted AI Proxy."

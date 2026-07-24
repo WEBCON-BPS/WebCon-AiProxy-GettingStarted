@@ -8,14 +8,14 @@ name: webcon-aiproxy-gs
 
 services:
   ai-proxy:
-    image: ${AIPROXY_IMAGE:-webconbps/aiproxy:2026.2.64.17}
+    image: ${AIPROXY_IMAGE:-webconbps/aiproxy:2026.2.135.35}
     container_name: aiproxy-gs
     restart: unless-stopped
     ports:
       # 7033 = HTTPS / mutual TLS - this is the endpoint the WEBCON Portal connects to.
       - "${AIPROXY_HTTPS_PORT:-7033}:8081"
-      # 5298 = plain HTTP - bound to localhost only. In the current image it just redirects to
-      # HTTPS; it is kept for the web Config UI that ships in a later image. Do not expose it.
+      # 5298 = plain HTTP - bound to localhost only. The app force-redirects HTTP to HTTPS, so open the
+      # Config UI over HTTPS instead: https://localhost:7033/config-ui. Keep this local-only.
       - "${AIPROXY_HTTP_PORT:-5298}:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
@@ -24,8 +24,8 @@ services:
       - AppConfiguration__SelfHosted__UseAzureKeyVault=false
       # Combined cert+key PEM: used both as the TLS server cert AND as the JWT signing key.
       - AppConfiguration__SelfHosted__Certificate__Path=/app/https/certificate.pem
-      # Login key for the web Config UI (/config-ui), which ships in a later image. Harmless now;
-      # deploy.ps1 generates a strong random one.
+      # Login key for the web Config UI at /config-ui (always on in SelfHosted mode). You type this
+      # value in the UI's login form; deploy.ps1 generates a strong random one and prints it.
       - ConfigAdmin__AccessKey=${CONFIG_ADMIN_ACCESS_KEY:?run deploy.ps1 first, or set CONFIG_ADMIN_ACCESS_KEY}
       # Force HTTP/1.1 on HTTPS so mTLS client-cert renegotiation works (HTTP/2 forbids it).
       - Kestrel__Endpoints__Https__Protocols=Http1
@@ -35,7 +35,8 @@ services:
       # TLS / signing certificate (read-only). Combined cert + PKCS#8 private key PEM.
       - ./.work/certificate.pem:/app/https/certificate.pem:ro
       # Provider config. With UseAzureKeyVault=false this file holds the REAL OpenAI key,
-      # so it lives under .work/ (git-ignored). Mounted rw so a future Config UI's edits can persist.
+      # so it lives under .work/ (git-ignored). Mounted rw so the Config UI's edits persist back to
+      # this file (the UI validates, writes it, and hot-reloads - no container restart needed).
       - ./.work/aiconfiguration.json:/app/aiconfiguration.json:rw
     # No container healthcheck: /health is behind mutual TLS (needs a client cert) and the
     # base image ships no curl/wget. deploy.ps1 -SmokeTest validates health from the host.

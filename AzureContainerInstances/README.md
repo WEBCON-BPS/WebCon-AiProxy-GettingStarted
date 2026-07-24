@@ -94,7 +94,7 @@ validation — the check is purely thumbprint equality.
 
 - **Azure CLI**, signed in (`az login`) as **Owner** of the target subscription. This is required to
   create role assignments and Key Vault secrets.
-- **Docker** (running) and **OpenSSL**.
+- **Docker** (running) and **OpenSSL** (if not on `PATH`, the script uses the copy bundled with Git for Windows).
 
 No source build, .NET SDK, Node.js, or private-registry login is required. The image is pulled from
 the **public** Docker Hub repository
@@ -128,7 +128,7 @@ URL.
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| `-ImageTag <tag>` | `2026.2.64.17` | Docker Hub tag of `webconbps/aiproxy` to deploy |
+| `-ImageTag <tag>` | `2026.2.135.35` | Docker Hub tag of `webconbps/aiproxy` to deploy |
 | `-Image <ref>` | — | Full image reference override (any registry) |
 | `-DeployFoundry` | off | Also create an AI Foundry + project + models and wire the `AiAzure*` secrets |
 | `-FoundryLocation <region>` | `swedencentral` | Region for the AI Foundry account |
@@ -184,6 +184,11 @@ az keyvault secret set --vault-name kvaipxgs<suffix> --name AiAzureApiKey  --val
 model deployments (`gpt-4o-mini`, `text-embedding-3-small`), then seeds `AiAzureEndpoint` and
 `AiAzureApiKey`.
 
+**Provider timeout (`TimeoutSeconds`).** Since **2026.2.135.35** `ProviderConfiguration` accepts an
+optional `TimeoutSeconds`; when a call exceeds it the proxy aborts and fails over to the next model
+configured for that task type (by priority). Omit it to use the SDK default. Add it in
+`config/aiconfiguration.json`, e.g. `"ProviderConfiguration": { "Endpoint": "AiAzureEndpoint", "ApiKey": "AiAzureApiKey", "TimeoutSeconds": 60 }`.
+
 **Network model.** The Foundry is configured as **deny-by-default**; the deployment allow-lists
 **only the container's public IP**, so the proxy can reach it while the Portal and all other clients
 cannot. This works because an ACI's outbound IP equals its inbound `ipAddress.ip` and is **stable
@@ -228,11 +233,18 @@ that the full flow can be driven from a browser on the same machine:
 
 You can then open:
 
-- `https://<fqdn>:8081/config-ui` — the Config UI over HTTPS. This path is exempt from client-
-  certificate enforcement; sign in with the access key the deployment printed, or with your own
-  `-ConfigAdminAccessKey`. Plain-HTTP port `8080` is not exposed publicly, so the panel is never
-  reachable unencrypted.
+- `https://<fqdn>:8081/config-ui` — the web Config UI (edit providers, connections, and models;
+  always enabled in SelfHosted mode). This path is exempt from client-certificate enforcement; sign in
+  with the access key the deployment printed, or with your own `-ConfigAdminAccessKey`. When the browser
+  prompts for a client certificate you can dismiss it — the panel does not require one. Plain-HTTP port
+  `8080` is not exposed publicly, so the panel is never reachable unencrypted.
 - Any mTLS-protected endpoint — the browser will prompt you to choose the client certificate.
+
+> **Note.** The proxy uses `ClientCertificateMode.AllowCertificate`, so the client certificate is
+> negotiated during the normal TLS handshake (not via renegotiation) — Chromium browsers handle this
+> fine once the server cert is trusted (`-InstallCertLocally`). Saving in the UI writes back to
+> `aiconfiguration.json` and hot-reloads; here that file is **baked into the image**, so UI edits do
+> not survive a container restart — persistent changes belong in `config/aiconfiguration.json`.
 
 `teardown.ps1` removes these certificates from the store again, unless `-KeepLocalCerts` is passed.
 

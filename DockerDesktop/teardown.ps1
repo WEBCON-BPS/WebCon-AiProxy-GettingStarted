@@ -21,7 +21,7 @@ $compose = Join-Path $here 'docker-compose.yml'
 
 # docker compose down needs the same substitution vars the file references; supply harmless
 # defaults so 'down' never fails just because .env is gone.
-if (-not $env:AIPROXY_IMAGE)           { $env:AIPROXY_IMAGE = 'webconbps/aiproxy:2026.2.64.17' }
+if (-not $env:AIPROXY_IMAGE)           { $env:AIPROXY_IMAGE = 'webconbps/aiproxy:2026.2.135.35' }
 if (-not $env:CONFIG_ADMIN_ACCESS_KEY) { $env:CONFIG_ADMIN_ACCESS_KEY = 'teardown' }
 
 Write-Host "Stopping and removing the container (docker compose down)..." -ForegroundColor Yellow

@@ -29,6 +29,7 @@ It is intended for the following scenarios:
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [The OpenAI provider (no Key Vault)](#the-openai-provider-no-key-vault)
+- [The web Config UI](#the-web-config-ui)
 - [Configuring WEBCON Studio](#configuring-webcon-studio)
 - [Testing the endpoint (Postman / the Portal)](#testing-the-endpoint-postman--the-portal)
 - [Verification](#verification)
@@ -44,8 +45,8 @@ It is intended for the following scenarios:
 ```
 Docker Desktop (local)
 └─ container "aiproxy-gs"  (public image webconbps/aiproxy)
-   ├─ 8081  HTTPS / mutual TLS   -> host :7033   the endpoint the WEBCON Portal connects to
-   ├─ 8080  plain HTTP           -> host :5298   localhost only; redirects to HTTPS (Config UI is future)
+   ├─ 8081  HTTPS / mutual TLS   -> host :7033   Portal endpoint AND the browser Config UI (/config-ui)
+   ├─ 8080  plain HTTP           -> host :5298   localhost only; force-redirects to HTTPS
    ├─ /app/https/certificate.pem        (mounted, read-only)  TLS server cert + JWT signing key
    └─ /app/aiconfiguration.json         (mounted, rw)         OpenAI provider; holds the real key
 ```
@@ -107,7 +108,8 @@ the JWT signing key is read straight from the mounted certificate PEM.
 ## Prerequisites
 
 - **Docker Desktop** running, with Docker Compose v2 (`docker compose version`).
-- **OpenSSL** on `PATH` (used once to generate the self-signed certificate).
+- **OpenSSL** (used once to generate the self-signed certificate). If it is not on `PATH`, the script
+  automatically uses the copy bundled with **Git for Windows** (`C:\Program Files\Git\...`).
 - An **OpenAI API key** (`sk-...`) if you want AI calls to succeed. The container starts without one;
   only AI calls require it.
 
@@ -152,11 +154,11 @@ docker compose down
 | `-OpenAiApiKey <sk-...>` | — | Real OpenAI key. Written into `.work/aiconfiguration.json`; never committed |
 | `-Model <id>` | `gpt-4o-mini` | OpenAI text/image model id |
 | `-EmbeddingModel <id>` | `text-embedding-3-small` | OpenAI embedding model id |
-| `-ImageTag <tag>` | `2026.2.64.17` | Docker Hub tag of `webconbps/aiproxy` to run |
+| `-ImageTag <tag>` | `2026.2.135.35` | Docker Hub tag of `webconbps/aiproxy` to run |
 | `-Image <ref>` | — | Full image reference override (any registry) |
 | `-HttpsPort <n>` | `7033` | Host port mapped to container `8081` (HTTPS/mTLS) |
 | `-HttpPort <n>` | `5298` | Host port mapped to container `8080` (plain HTTP) |
-| `-ConfigAdminAccessKey` | auto-generated (strong, random) | Login key for the **web Config UI that ships in a later image**; harmless now |
+| `-ConfigAdminAccessKey` | auto-generated (strong, random) | Login key for the **web Config UI** (`/config-ui`); the script prints it. Pass a value to set it explicitly |
 | `-CertPassword` | `Sandbox!1` | Password for the exported client `.pfx` |
 | `-InstallCertLocally` | off | Import the certificates into the `CurrentUser` store (server cert → Root, client cert → My) |
 | `-SmokeTest` | off | Run the mTLS health checks at the end |
@@ -210,14 +212,66 @@ notepad .work\aiconfiguration.json        # replace the ApiKey value
 docker compose -f docker-compose.yml restart
 ```
 
-> A browser-based **Config UI** for editing this without touching files is on the way in a later
-> image; until then, the rendered file + a restart is the way to change the key or models.
+> Since **2026.2.135.35** you no longer have to touch this file by hand: the browser
+> [**Config UI**](#the-web-config-ui) edits providers, connections, and models and writes the changes
+> back to `.work/aiconfiguration.json` (hot-reloaded, no restart). Editing the file + a restart still
+> works and is unchanged.
 
 The default endpoint is OpenAI's public API; `ModelName` values are OpenAI model ids (for example
 `gpt-4o-mini`, `text-embedding-3-small`). To use a different provider, change `Type` (the image also
 supports `AzureAi`, `Gemini`, and `OpenAiApiCompatible`) and the matching `ProviderConfiguration`.
 
+**Provider timeout (`TimeoutSeconds`).** Since 2026.2.135.35 you can set an optional per-connection
+timeout inside `ProviderConfiguration`. When a call exceeds it, the proxy aborts and fails over to the
+next model configured for that task type (by priority):
+
+```json
+"ProviderConfiguration": {
+  "ApiKey": "sk-...your real key...",
+  "TimeoutSeconds": 60
+}
+```
+
+Omit it (or leave it `null`) to use the provider SDK's default. In this single-provider sandbox there
+is no lower-priority model to fail over to, so a timeout simply aborts the call — it becomes useful
+once you add a second connection/model.
+
 ---
+
+## The web Config UI
+
+Since **2026.2.135.35** the image ships a **web administrative interface** for editing AI providers,
+connections, and models. It is **always enabled in SelfHosted mode** — no extra flag.
+
+**Open it at [`https://localhost:7033/config-ui`](https://localhost:7033/config-ui)** — over the HTTPS
+port. The plain-HTTP port (`5298`) is not an option: the app force-redirects HTTP to HTTPS, so
+`http://localhost:5298/...` bounces to HTTPS anyway.
+
+To make this smooth in a browser, run **`deploy.ps1 -InstallCertLocally`** first — it trusts the
+self-signed server cert (no TLS warning) and imports the client cert. Then:
+
+- The proxy uses `ClientCertificateMode.AllowCertificate`, so the client certificate is negotiated
+  during the normal TLS handshake (not via renegotiation) — browsers handle this fine.
+- When the browser prompts you to choose a client certificate, **just dismiss it** — the `/config-ui`
+  paths are exempt from the client-certificate check, so the panel loads without one. (Verified: a
+  request with no client cert returns `200` on `/config-ui`.)
+- Without `-InstallCertLocally` it still works; you just click through the browser's TLS warning first.
+
+- **Log in** with the **Config UI access key** — the strong random value `deploy.ps1` prints (or the
+  one you passed via `-ConfigAdminAccessKey`). It comes from the `ConfigAdmin__AccessKey` environment
+  variable set in `docker-compose.yml` (rendered from `.env`). The key is exchanged for an HttpOnly
+  session cookie; it is never stored in the browser.
+- **Edits persist to the mounted file.** Saving in the UI validates the change, writes it back to
+  `.work/aiconfiguration.json` (a `.bak` is kept), and **hot-reloads** the running proxy — no restart.
+  This is why the file is mounted read-write.
+
+> **Three ways to change the same configuration.** They are equivalent, just different surfaces:
+>
+> | Surface | What it controls | Applied by |
+> |---|---|---|
+> | **Environment variables** (`docker-compose.yml` / `.env`) | app-level settings: SelfHosted mode, Key Vault on/off, certificate path, `ConfigAdmin__AccessKey`, logging | `docker compose up` (restart to change) |
+> | **`aiconfiguration.json`** (`.work/`, mounted) | providers, connections, models, task-type mappings, `TimeoutSeconds` | restart, or hot-reload when saved via the UI |
+> | **The Config UI** (`/config-ui`) | the same providers/connections/models — a front-end over `aiconfiguration.json` | writes the file + hot-reloads live |
 
 ## Configuring WEBCON Studio
 
@@ -336,7 +390,9 @@ docker exec -it aiproxy-gs /bin/bash
 | **Mutual TLS: the certificate is correct but the connection still fails** | Validation is an **exact SHA-1 thumbprint** match. Upload the exact `aiproxy-client.pfx`/PEM the container serves, and run the check from the Portal host. |
 | **`401` on `/health` in a browser, cert installed** | The browser **did not send** the client cert (a thumbprint mismatch would drop the connection instead). On Windows the cert must carry the **Client Authentication** EKU to be offered; regenerate with `teardown.ps1 -PurgeWork` then `deploy.ps1 -InstallCertLocally`, and pick the cert when prompted. Postman/the Portal (explicit `.pfx`) are unaffected. |
 | **`401` on an AI endpoint, valid cert** | Not a cert fault — the endpoint also wants a **Bearer JWT** issued by `/token`, which only the Portal flow obtains. |
-| **`401` from OpenAI** on AI calls | The `ApiKey` in `.work\aiconfiguration.json` is empty or wrong. Edit the file and `docker compose restart`. |
+| **Config UI: TLS warning / client-cert prompt over HTTPS** | Expected for a self-signed sandbox. Run `deploy.ps1 -InstallCertLocally` to trust the server cert; dismiss the client-cert prompt (`/config-ui` does not need it). The plain-HTTP URL does not help — the app force-redirects HTTP to HTTPS. |
+| **Config UI login rejected** | Wrong access key. Use the value `deploy.ps1` printed (the `CONFIG_ADMIN_ACCESS_KEY` in `.env` / `ConfigAdmin__AccessKey` env var), or re-run `deploy.ps1 -ConfigAdminAccessKey "<your-key>"`. |
+| **`401` from OpenAI** on AI calls | The `ApiKey` in `.work\aiconfiguration.json` is empty or wrong. Edit the file (or use the Config UI) and `docker compose restart`. |
 | **`404` / model not found from OpenAI** | Each `ModelName` must be a valid OpenAI model id (for example `gpt-4o-mini`, `text-embedding-3-small`). |
 | **`dbcontext` health reported as "degraded"** | Expected in SelfHosted mode with no SQL database — database access is stubbed and is not required for the mTLS/token flow. |
 | **Port `7033`/`5298` already in use** | Re-run with `-HttpsPort` / `-HttpPort`, or stop the conflicting service. |
