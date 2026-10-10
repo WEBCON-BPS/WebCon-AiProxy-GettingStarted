@@ -1,0 +1,91 @@
+# Values for the public WEBCON AI Proxy Helm chart (oci://registry-1.docker.io/webconbps/webcon-aiproxy)
+# used by deploy.ps1. Works unchanged on Docker Desktop Kubernetes and on AKS.
+#
+# No secrets in this file. deploy.ps1 creates three Secrets in the namespace and the chart reads them:
+#   aiproxy-tls           tls.pem = combined cert + PKCS#8 key (HTTPS server cert, mTLS trust, JWT signing key)
+#   aiproxy-config-admin  ConfigAdmin__AccessKey = Config UI login key
+#   aiproxy-provider-keys ProviderConnections__OpenAi__ProviderConfiguration__ApiKey = your OpenAI key
+
+image:
+  repository: webconbps/aiproxy   # tag defaults to the chart's appVersion (chart 2026.2.277-65 -> image 2026.2.277.65)
+
+# LoadBalancer = L4 pass-through, so the client certificate reaches the pod untouched (an HTTP Ingress
+# would terminate TLS and break mTLS). Docker Desktop publishes it on localhost; AKS gives it a public IP.
+service:
+  type: LoadBalancer
+  httpsPort: 8081
+
+tls:
+  mode: existingSecret
+  existingSecret: aiproxy-tls
+
+configAdmin:
+  source: existingSecret
+  existingSecretName: aiproxy-config-admin
+
+secrets:
+  config:
+    source: existingSecret
+    existingSecretName: aiproxy-provider-keys
+    entries:
+      - configKey: ProviderConnections__OpenAi__ProviderConfiguration__ApiKey
+
+config:
+  # ApiKey stays empty here on purpose - the real key is injected from aiproxy-provider-keys as an env var,
+  # which overrides the file value. Same 2026.2 schema as DockerDesktop/config/aiconfiguration.json.
+  aiConfigurationJson: |
+    {
+      "ProviderConnections": {
+        "OpenAi": {
+          "Description": "OpenAI (api.openai.com). ApiKey comes from the aiproxy-provider-keys Secret.",
+          "Type": "OpenAi",
+          "ProviderConfiguration": { "ApiKey": "" }
+        }
+      },
+      "ProviderModels": [
+        {
+          "Id": "11111111-1111-1111-1111-111111111111",
+          "ConnectionName": "OpenAi",
+          "Priority": 100,
+          "Name": "OpenAI (sandbox)",
+          "Description": "Sandbox model. ModelName values are OpenAI model ids.",
+          "Factor": 1.0,
+          "TextModel": { "ModelName": "gpt-4o-mini" },
+          "ImageModel": { "ModelName": "gpt-4o-mini" },
+          "AudioModel": { "ModelName": "whisper-1" },
+          "EmbeddingModel": { "ModelName": "text-embedding-3-small" }
+        }
+      ],
+      "AiTaskTypesConfiguration": {
+        "Concierge": [ "11111111-1111-1111-1111-111111111111" ],
+        "EmbeddingGeneration": [ "11111111-1111-1111-1111-111111111111" ]
+      }
+    }
+  # The image's own SelfHosted appsettings.json, minus the plain-HTTP endpoint (the chart exposes HTTPS only).
+  # The chart sets the certificate path and RequireClientCertificate via env vars.
+  appSettingsJson: |
+    {
+      "ServiceName": "WebCon.AIProxy.SelfHosted",
+      "AppConfiguration": {
+        "AzureKeyVault": { "Url": "" },
+        "ConnectionString": "",
+        "LASUrl": "",
+        "ApplicationInsightsConnectionString": "",
+        "MaxRequestBodySize": 524288000,
+        "DefaultApiVersion": "V1",
+        "SelfHosted": {
+          "Enabled": true,
+          "UseAzureKeyVault": false,
+          "Certificate": { "Path": "", "Password": null, "SecretName": "" }
+        }
+      },
+      "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } },
+      "Serilog": {
+        "Using": [ "Serilog.Sinks.Console" ],
+        "WriteTo": [ { "Name": "Console" } ],
+        "Enrich": [ "FromLogContext", "WithEnvironmentName", "WithMachineName", "WithCorrelationId" ]
+      },
+      "OpenTelemetry": {},
+      "Kestrel": { "Endpoints": { "Https": { "Url": "https://+:8081" } } },
+      "AllowedHosts": "*"
+    }
