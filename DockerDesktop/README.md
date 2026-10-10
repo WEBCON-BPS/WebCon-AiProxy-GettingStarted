@@ -30,6 +30,7 @@ It is intended for the following scenarios:
 - [Configuration](#configuration)
 - [The OpenAI provider (no Key Vault)](#the-openai-provider-no-key-vault)
 - [The web Config UI](#the-web-config-ui)
+- [Client id/secret instead of mutual TLS](#client-idsecret-instead-of-mutual-tls)
 - [Configuring WEBCON Studio](#configuring-webcon-studio)
 - [Testing the endpoint (Postman / the Portal)](#testing-the-endpoint-postman--the-portal)
 - [Verification](#verification)
@@ -85,16 +86,18 @@ WEBCON Portal                         AI Proxy container (Docker)         OpenAI
 (published to `localhost:7033`) with a self-signed certificate and requires the client to present that
 **same** certificate; both sides compare the exact SHA-1 thumbprint. The certificate uploaded to the
 Portal must therefore be byte-for-byte identical to the one the container serves. There is no CA chain
-and no hostname validation — the check is purely thumbprint equality. In the current image **every**
-endpoint requires the matching client certificate (a request without it has its connection dropped).
+and no hostname validation — the check is purely thumbprint equality. Since **2026.2.260.63**, `/health` and
+`/config-ui` are exempt from the client-certificate check; every other endpoint returns `401` without a
+certificate, and a **wrong** certificate drops the TLS connection.
 
 **Two layers, two kinds of `401`.** Passing mutual TLS only gets you past the certificate check:
 
-- **`/health`** needs *only* the client certificate — with the matching cert it returns `200`, which
-  is why it is the smoke-test endpoint (see [Verification](#verification)). A `401` here means the
-  client **did not present a certificate** at all. The app accepts a connection with no client cert
-  (TLS `AllowCertificate`) and then returns `401`; a browser typically hits this because Windows did
+- **`/token`** (and every other non-exempt endpoint) needs the client certificate. Without one the app
+  accepts the connection (TLS `AllowCertificate`) and returns `401`; with the matching cert, `/token`
+  issues a JWT (a bare `POST` without form fields returns `400 invalid_request` instead — past mTLS,
+  just missing credentials). The smoke test requests a token both ways (see [Verification](#verification)). A browser that gets `401` typically did
   not *offer* the cert in the picker — see [the testing notes](#testing-the-endpoint-postman--the-portal).
+- **`/health`** needs no certificate at all and returns `200` whenever the app is up.
 - **AI endpoints** additionally require a **Bearer JWT** the proxy issues from `/token`. A `401` there
   *with* a valid client certificate is the **authorization** layer (missing token), not a certificate
   problem — only the full WEBCON Portal flow obtains that token.
@@ -102,6 +105,15 @@ endpoint requires the matching client certificate (a request without it has its 
 **No Key Vault.** With `AppConfiguration__SelfHosted__UseAzureKeyVault=false`, the proxy does **not**
 call Azure. The values in `aiconfiguration.json` are used verbatim (the `ApiKey` is the real key), and
 the JWT signing key is read straight from the mounted certificate PEM.
+
+**Optional, not used here (since 2026.2.260.63).** The single `Certificate__Path` serves all three roles
+(HTTPS server, mTLS trust, JWT signing). Each role can be split out with its own
+`AppConfiguration__SelfHosted__Certificates__Https__Path`, `...__Certificates__MTLS__Path` or
+`AppConfiguration__Jwt__SigningKey__Path` (plus `__Password` for a `.pfx`); an empty role falls back to
+`Certificate__Path`. Instead of mTLS, the Portal can also authenticate with a client id/secret:
+`AppConfiguration__SelfHosted__RequireClientCertificate=false` plus `...__SelfHosted__ClientId` and
+`...__SelfHosted__ClientSecret` (startup fails if either is missing); `deploy.ps1` can switch to it, see
+[Client id/secret instead of mutual TLS](#client-idsecret-instead-of-mutual-tls).
 
 ---
 
@@ -154,14 +166,15 @@ docker compose down
 | `-OpenAiApiKey <sk-...>` | — | Real OpenAI key. Written into `.work/aiconfiguration.json`; never committed |
 | `-Model <id>` | `gpt-4o-mini` | OpenAI text/image model id |
 | `-EmbeddingModel <id>` | `text-embedding-3-small` | OpenAI embedding model id |
-| `-ImageTag <tag>` | `2026.2.135.35` | Docker Hub tag of `webconbps/aiproxy` to run |
+| `-ImageTag <tag>` | `2026.2.277.65` | Docker Hub tag of `webconbps/aiproxy` to run |
 | `-Image <ref>` | — | Full image reference override (any registry) |
 | `-HttpsPort <n>` | `7033` | Host port mapped to container `8081` (HTTPS/mTLS) |
 | `-HttpPort <n>` | `5298` | Host port mapped to container `8080` (plain HTTP) |
+| `-ClientId` / `-ClientSecret` | — (mTLS) | Pass both to authenticate the Portal with a client id/secret instead of mTLS. See [Client id/secret](#client-idsecret-instead-of-mutual-tls) |
 | `-ConfigAdminAccessKey` | auto-generated (strong, random) | Login key for the **web Config UI** (`/config-ui`); the script prints it. Pass a value to set it explicitly |
 | `-CertPassword` | `Sandbox!1` | Password for the exported client `.pfx` |
 | `-InstallCertLocally` | off | Import the certificates into the `CurrentUser` store (server cert → Root, client cert → My) |
-| `-SmokeTest` | off | Run the mTLS health checks at the end |
+| `-SmokeTest` | off | Check `/health` and request a token from `/token` at the end (mTLS or client id/secret) |
 
 ### Match `aiconfiguration.json` to the image version
 
@@ -220,6 +233,8 @@ docker compose -f docker-compose.yml restart
 The default endpoint is OpenAI's public API; `ModelName` values are OpenAI model ids (for example
 `gpt-4o-mini`, `text-embedding-3-small`). To use a different provider, change `Type` (the image also
 supports `AzureAi`, `Gemini`, and `OpenAiApiCompatible`) and the matching `ProviderConfiguration`.
+Since **2026.2.277.65** the `Gemini` type also covers the **Gemini 3.x** family through the EU multi-region
+Vertex AI endpoint, including multi-step tool calling.
 
 **Provider timeout (`TimeoutSeconds`).** Since 2026.2.135.35 you can set an optional per-connection
 timeout inside `ProviderConfiguration`. When a call exceeds it, the proxy aborts and fails over to the
@@ -269,9 +284,34 @@ self-signed server cert (no TLS warning) and imports the client cert. Then:
 >
 > | Surface | What it controls | Applied by |
 > |---|---|---|
-> | **Environment variables** (`docker-compose.yml` / `.env`) | app-level settings: SelfHosted mode, Key Vault on/off, certificate path, `ConfigAdmin__AccessKey`, logging | `docker compose up` (restart to change) |
+> | **Environment variables** (`docker-compose.yml` / `.env`) | app-level settings: SelfHosted mode, Key Vault on/off, certificate path(s), `ConfigAdmin__AccessKey`, logging | `docker compose up` (restart to change) |
 > | **`aiconfiguration.json`** (`.work/`, mounted) | providers, connections, models, task-type mappings, `TimeoutSeconds` | restart, or hot-reload when saved via the UI |
 > | **The Config UI** (`/config-ui`) | the same providers/connections/models — a front-end over `aiconfiguration.json` | writes the file + hot-reloads live |
+
+## Client id/secret instead of mutual TLS
+
+Since **2026.2.260.63** the proxy can authenticate the Portal with a **client id/secret** pair on
+`/token` instead of a client certificate. Pass both values to `deploy.ps1`:
+
+```powershell
+./deploy.ps1 -OpenAiApiKey "sk-..." -ClientId "<client-id>" -ClientSecret "<client-secret>" -SmokeTest
+```
+
+This sets `AppConfiguration__SelfHosted__RequireClientCertificate=false` plus
+`AppConfiguration__SelfHosted__ClientId` / `__ClientSecret` (via `.env`). In this mode:
+
+- No endpoint asks for a client certificate. TLS still uses the generated certificate, and its key still
+  signs the JWTs, so `.work/` is still needed.
+- `/token` accepts only the configured pair: a wrong pair gets `401 Invalid client_id/client_secret.`
+  The startup fails if only one of the two is set.
+- In WEBCON Studio, enter the **same** client id and secret as the Portal's AI Proxy credentials.
+
+The smoke test then checks `/token` with a wrong secret (expect `401`) and with the configured pair
+(expect `200` with an `access_token`). Re-run `deploy.ps1` without `-ClientId`/`-ClientSecret` to go
+back to mTLS.
+
+> The secret is written in cleartext to `.env` (git-ignored), like the Config UI key. Use a sandbox
+> value, not a production secret.
 
 ## Configuring WEBCON Studio
 
@@ -282,7 +322,7 @@ parameters**:
    will not attach the client certificate.
 2. Set the **AI Proxy URL** to `https://localhost:7033` — **with no trailing slash**. (The Portal/IIS
    host must be the same machine that runs Docker Desktop, or reachable at that address.)
-3. Upload the certificate **together with its private key** — either the printed `aiproxy-client.pfx`
+3. **mTLS (default):** upload the certificate **together with its private key** — either the printed `aiproxy-client.pfx`
    (and its password) or the combined PEM. It must be the **same** certificate the container serves
    (identical thumbprint).
 4. Restart both the **WEBCON Service** (Windows service) **and** the Portal (IIS); the configuration
@@ -297,31 +337,28 @@ The reliable way to drive mutual TLS by hand is a client that lets you **attach 
 
 - **Postman** — under the request's *Settings → Certificates* (or *Settings → Certificates* at the app
   level), add a client certificate for host `localhost` port `7033`, pointing at
-  `.work\aiproxy-client.pfx` with the password (`Sandbox!1` by default). Then `GET
-  https://localhost:7033/health` returns **200 Healthy**. (Disable SSL verification, or trust the
-  server cert, since it is self-signed.)
+  `.work\aiproxy-client.pfx` with the password (`Sandbox!1` by default). Then `POST
+  https://localhost:7033/token` returns **400 invalid_request** (cert accepted) instead of **401**.
+  (Disable SSL verification, or trust the server cert, since it is self-signed.)
 - **The WEBCON Portal** — the real consumer; see [Configuring WEBCON Studio](#configuring-webcon-studio).
 
 `deploy.ps1 -InstallCertLocally` imports the sandbox certificates into the **CurrentUser** store
 (server cert → `Root` for TLS trust, client cert → `My`). This helps tools that read the OS store, and
 removes the browser's TLS warning.
 
-> **Why a browser gets `401` on `/health` even though the cert is installed.** `/health` needs only
-> the client certificate, so the `401` means the browser **did not send one**. The proxy accepts the
-> connection without a client cert (TLS `AllowCertificate`) and the app then returns `401` — it is not
-> a thumbprint mismatch (that would drop the connection). On Windows the usual cause is that the cert
-> is **not offered** in the selection prompt unless it carries the **Client Authentication** EKU.
-> `deploy.ps1` now generates the cert with `serverAuth,clientAuth`; a certificate created by an earlier
-> run lacks it, so regenerate and re-import:
+> **Why a browser gets `401` even though the cert is installed.** The `401` means the browser **did
+> not send** a client certificate — a thumbprint mismatch would drop the connection instead. On Windows
+> the usual cause is that the cert is **not offered** in the selection prompt unless it carries the
+> **Client Authentication** EKU. `deploy.ps1` generates the cert with `serverAuth,clientAuth`; a
+> certificate created by an older run lacks it, so regenerate and re-import:
 >
 > ```powershell
 > ./teardown.ps1 -PurgeWork
 > ./deploy.ps1 -OpenAiApiKey "sk-..." -InstallCertLocally -SmokeTest
 > ```
 >
-> Then open `https://localhost:7033/health` and **pick the certificate when prompted** (restart the
-> browser if no prompt appears). Postman and the Portal, which attach the `.pfx` explicitly, are
-> unaffected and remain the reliable test paths.
+> Postman and the Portal, which attach the `.pfx` explicitly, are unaffected and remain the reliable
+> test paths.
 
 `teardown.ps1` removes the imported certificates from the store again, unless `-KeepLocalCerts` is
 passed.
@@ -333,22 +370,23 @@ passed.
 `deploy.ps1 -SmokeTest` runs the checks below automatically. To run them manually on Windows, prefer
 PowerShell together with a small C# helper: the bundled `curl.exe` uses the **Schannel** backend
 (which does not support PEM client certificates), and a PowerShell *scriptblock* TLS callback fails on
-background threads in Windows PowerShell 5.1. The helper avoids both issues and mirrors exactly what
-the (C#) Portal does:
+background threads in Windows PowerShell 5.1. The helper avoids both issues, mirrors exactly what the
+(C#) Portal does, and works in both Windows PowerShell 5.1 and PowerShell 7:
 
 ```powershell
-$pfx = '.work/aiproxy-client.pfx'; $pwd = 'Sandbox!1'
+$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('.work/aiproxy-client.pfx', 'Sandbox!1')
 
-Add-Type -ReferencedAssemblies System.Net.Http -TypeDefinition @'
+$refs = if ($PSVersionTable.PSEdition -eq 'Desktop') { @{ ReferencedAssemblies = 'System.Net.Http' } } else { @{} }
+Add-Type @refs -TypeDefinition @'
 using System; using System.Net.Http; using System.Security.Cryptography.X509Certificates;
 public static class MTls {
-  public static string Get(string url, string pfx, string pwd, bool withCert) {
+  public static string Send(string url, X509Certificate2 cert, bool post) {
     var h = new HttpClientHandler();
     h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => true;   // accept self-signed for the test
-    if (withCert) h.ClientCertificates.Add(new X509Certificate2(pfx, pwd));
+    if (cert != null) h.ClientCertificates.Add(cert);
     using (var cl = new HttpClient(h)) {
       cl.Timeout = TimeSpan.FromSeconds(25);
-      try { var r = cl.GetAsync(url).GetAwaiter().GetResult();
+      try { var r = post ? cl.PostAsync(url, new StringContent("")).GetAwaiter().GetResult() : cl.GetAsync(url).GetAwaiter().GetResult();
             return (int)r.StatusCode + ": " + r.Content.ReadAsStringAsync().GetAwaiter().GetResult(); }
       catch (Exception ex) { var e = ex; while (e.InnerException != null) e = e.InnerException; return "ERR: " + e.Message; }
     }
@@ -356,8 +394,9 @@ public static class MTls {
 }
 '@
 
-"with cert    -> " + [MTls]::Get("https://localhost:7033/health", $pfx, $pwd, $true)    # expect HTTP 200 Healthy
-"without cert -> " + [MTls]::Get("https://localhost:7033/health", $pfx, $pwd, $false)   # expect the connection to be dropped (no client cert)
+"health        -> " + [MTls]::Send("https://localhost:7033/health", $null, $false)   # expect 200 Healthy (no cert needed)
+"token no cert -> " + [MTls]::Send("https://localhost:7033/token",  $null, $true)    # expect 401 (mTLS enforced)
+"token cert    -> " + [MTls]::Send("https://localhost:7033/token",  $cert, $true)    # expect 400 invalid_request (cert accepted)
 ```
 
 Inspect the running container:
@@ -388,13 +427,12 @@ docker exec -it aiproxy-gs /bin/bash
 | **`No RSA private key found in PEM`** at startup or on `/token` | The certificate must be a combined cert + **PKCS#8** key PEM (`BEGIN PRIVATE KEY`), which `deploy.ps1` generates. Delete `.work\*` and re-run to regenerate. |
 | **`Certificate does not contain private key`** | `Certificate__Path` must point at the combined PEM (cert **and** key), not a cert-only file. |
 | **Mutual TLS: the certificate is correct but the connection still fails** | Validation is an **exact SHA-1 thumbprint** match. Upload the exact `aiproxy-client.pfx`/PEM the container serves, and run the check from the Portal host. |
-| **`401` on `/health` in a browser, cert installed** | The browser **did not send** the client cert (a thumbprint mismatch would drop the connection instead). On Windows the cert must carry the **Client Authentication** EKU to be offered; regenerate with `teardown.ps1 -PurgeWork` then `deploy.ps1 -InstallCertLocally`, and pick the cert when prompted. Postman/the Portal (explicit `.pfx`) are unaffected. |
+| **`401` in a browser, cert installed** | The browser **did not send** the client cert (a thumbprint mismatch would drop the connection instead). On Windows the cert must carry the **Client Authentication** EKU to be offered; regenerate with `teardown.ps1 -PurgeWork` then `deploy.ps1 -InstallCertLocally`, and pick the cert when prompted. Postman/the Portal (explicit `.pfx`) are unaffected. |
 | **`401` on an AI endpoint, valid cert** | Not a cert fault — the endpoint also wants a **Bearer JWT** issued by `/token`, which only the Portal flow obtains. |
 | **Config UI: TLS warning / client-cert prompt over HTTPS** | Expected for a self-signed sandbox. Run `deploy.ps1 -InstallCertLocally` to trust the server cert; dismiss the client-cert prompt (`/config-ui` does not need it). The plain-HTTP URL does not help — the app force-redirects HTTP to HTTPS. |
 | **Config UI login rejected** | Wrong access key. Use the value `deploy.ps1` printed (the `CONFIG_ADMIN_ACCESS_KEY` in `.env` / `ConfigAdmin__AccessKey` env var), or re-run `deploy.ps1 -ConfigAdminAccessKey "<your-key>"`. |
 | **`401` from OpenAI** on AI calls | The `ApiKey` in `.work\aiconfiguration.json` is empty or wrong. Edit the file (or use the Config UI) and `docker compose restart`. |
 | **`404` / model not found from OpenAI** | Each `ModelName` must be a valid OpenAI model id (for example `gpt-4o-mini`, `text-embedding-3-small`). |
-| **`dbcontext` health reported as "degraded"** | Expected in SelfHosted mode with no SQL database — database access is stubbed and is not required for the mTLS/token flow. |
 | **Port `7033`/`5298` already in use** | Re-run with `-HttpsPort` / `-HttpPort`, or stop the conflicting service. |
 
 ---

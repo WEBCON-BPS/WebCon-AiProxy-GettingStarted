@@ -16,7 +16,7 @@
   Prerequisites: az CLI (logged in), Docker, openssl. No source build / SDK needed.
 
 .EXAMPLE
-  # Default image (webconbps/aiproxy:2026.2.135.35), mTLS/Portal test, install certs locally:
+  # Default image (webconbps/aiproxy:2026.2.277.65), mTLS/Portal test, install certs locally:
   ./deploy.ps1 -SmokeTest -InstallCertLocally
 
   # Pin a different tag + a working AzureAi provider (remember to match the aiconfiguration schema):
@@ -32,7 +32,7 @@ param(
   [string]$AzureAiApiKey,                           # optional; seeded into KV as AiAzureApiKey
   [string]$CertPassword = 'Sandbox!1',              # password for the exported client PFX (Portal upload)
   [string]$ConfigAdminAccessKey,                    # login key for the config UI; auto-generated (strong) if not supplied
-  [string]$ImageTag = '2026.2.135.35',              # tag of the public Docker Hub image webconbps/aiproxy (pick one matching your aiconfiguration schema)
+  [string]$ImageTag = '2026.2.277.65',              # tag of the public Docker Hub image webconbps/aiproxy (pick one matching your aiconfiguration schema)
   [string]$Image,                                   # full image ref override (any registry/tag); takes precedence over -ImageTag
   [switch]$DeployFoundry,                           # also create an AI Foundry + project + models, locked to the container's IP, and wire AiAzure* secrets
   [string]$FoundryLocation = 'swedencentral',       # region for the AI Foundry account (must offer the chosen models)
@@ -191,14 +191,13 @@ if ($DeployFoundry) {
 }
 
 # --- 6. aci.bicep ------------------------------------------------------------
-$certB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($certPem))
 Write-Information "Deploying aci.bicep (container)..."
 Invoke-Native {
   az deployment group create -g $rg -n aci-aiproxy-gs `
     --template-file (Join-Path $here 'bicep/aci.bicep') `
     --parameters parAciName=$aciName parImage=$acrImage parAcrLoginServer=$acrLoginServer `
                  parMiId=$miId parMiClientId=$miClientId parKvUri=$kvUri `
-                 parDnsNameLabel=$dnsLabel parLocation=$Location parCertPemBase64=$certB64 `
+                 parDnsNameLabel=$dnsLabel parLocation=$Location `
                  parConfigAdminAccessKey=$ConfigAdminAccessKey | Out-Null
 }
 $endpoint = az deployment group show -g $rg -n aci-aiproxy-gs --query "properties.outputs.outEndpoint.value" -o tsv
@@ -217,7 +216,7 @@ if ($DeployFoundry) {
 Write-Host ""
 Write-Host "==================== DONE ====================" -ForegroundColor Green
 Write-Host "Endpoint (Portal -> AI Proxy SelfHosted Url): $endpoint"
-Write-Host "Health (with client cert)                   : $endpoint/health"
+Write-Host "Health (no client cert needed)               : $endpoint/health"
 Write-Host "Cert thumbprint (must match in Portal)      : $thumbprint"
 Write-Host "Client cert for Portal upload               : $clientPfx  (password: $CertPassword)"
 Write-Host "                                              $certPem  (PEM with private key)"
@@ -276,37 +275,40 @@ if ($InstallCertLocally) {
 Write-Host ""
 
 if ($SmokeTest) {
-  # mTLS test via a tiny C# helper. A PowerShell scriptblock used as the validation callback
-  # fails on background threads in Windows PowerShell 5.1 ("no Runspace available"); a C# lambda
-  # does not - and this mirrors exactly what the WEBCON Portal (also C#) does.
-  $csharp = @'
+  # mTLS test via a tiny C# helper (mirrors what the C# WEBCON Portal does). The certificate is loaded
+  # in PowerShell and passed in, so the helper compiles on both Windows PowerShell 5.1 and PowerShell 7.
+  # Since 2026.2.260.63 /health is exempt from the client-cert check, so mTLS is proven on POST /token:
+  # no cert -> 401 (mTLS layer), matching cert -> 400 invalid_request (past mTLS, just no credentials).
+  $refs = if ($PSVersionTable.PSEdition -eq 'Desktop') { @{ ReferencedAssemblies = 'System.Net.Http' } } else { @{} }
+  if (-not ('AiProxyMtls' -as [type])) { Add-Type @refs -TypeDefinition @'
 using System; using System.Net.Http; using System.Security.Cryptography.X509Certificates;
-public static class AiProxySmoke {
-  public static string Health(string url, string pfx, string pwd, bool withCert) {
+public static class AiProxyMtls {
+  public static string Send(string url, X509Certificate2 cert, bool post) {
     var h = new HttpClientHandler();
     h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => true;
-    if (withCert) h.ClientCertificates.Add(new X509Certificate2(pfx, pwd));
+    if (cert != null) h.ClientCertificates.Add(cert);
     using (var cl = new HttpClient(h)) {
       cl.Timeout = TimeSpan.FromSeconds(25);
       try {
-        var r = cl.GetAsync(url).GetAwaiter().GetResult();
+        var r = post ? cl.PostAsync(url, new StringContent("")).GetAwaiter().GetResult() : cl.GetAsync(url).GetAwaiter().GetResult();
         return "HTTP " + ((int)r.StatusCode) + ": " + r.Content.ReadAsStringAsync().GetAwaiter().GetResult();
       } catch (Exception ex) { var e = ex; while (e.InnerException != null) e = e.InnerException; return "ERR: " + e.Message; }
     }
   }
 }
-'@
-  if (-not ('AiProxySmoke' -as [type])) { Add-Type -TypeDefinition $csharp -ReferencedAssemblies System.Net.Http }
-  $healthUrl = "https://$fqdn`:8081/health"
+'@ }
+  $base = "https://$fqdn`:8081"
+  $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($clientPfx, $CertPassword)
 
   Write-Host "Smoke test (waiting for container to come up)..." -ForegroundColor Cyan
   for ($i = 1; $i -le 20; $i++) {
-    $res = [AiProxySmoke]::Health($healthUrl, $clientPfx, $CertPassword, $true)
-    Write-Host "  with cert, attempt $i -> $res"
+    $res = [AiProxyMtls]::Send("$base/health", $null, $false)
+    Write-Host "  /health, attempt $i -> $res"
     if ($res -like 'HTTP 200*') { break }
     Start-Sleep -Seconds 15
   }
-  Write-Host "  without cert         -> $([AiProxySmoke]::Health($healthUrl, $clientPfx, $CertPassword, $false))  (expected: connection rejected)"
+  Write-Host "  POST /token without cert -> $([AiProxyMtls]::Send("$base/token", $null, $true))  (expected: HTTP 401 - mTLS enforced)"
+  Write-Host "  POST /token with cert    -> $([AiProxyMtls]::Send("$base/token", $cert, $true))  (expected: HTTP 400 invalid_request - cert accepted)"
 
   # What cert does the endpoint actually serve? (detects a TLS-terminating proxy / wrong cert)
   try {

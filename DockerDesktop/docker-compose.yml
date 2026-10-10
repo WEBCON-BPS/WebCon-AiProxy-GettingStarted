@@ -8,7 +8,7 @@ name: webcon-aiproxy-gs
 
 services:
   ai-proxy:
-    image: ${AIPROXY_IMAGE:-webconbps/aiproxy:2026.2.135.35}
+    image: ${AIPROXY_IMAGE:-webconbps/aiproxy:2026.2.277.65}
     container_name: aiproxy-gs
     restart: unless-stopped
     ports:
@@ -27,6 +27,11 @@ services:
       # Login key for the web Config UI at /config-ui (always on in SelfHosted mode). You type this
       # value in the UI's login form; deploy.ps1 generates a strong random one and prints it.
       - ConfigAdmin__AccessKey=${CONFIG_ADMIN_ACCESS_KEY:?run deploy.ps1 first, or set CONFIG_ADMIN_ACCESS_KEY}
+      # Portal authentication: mTLS (default) or, with deploy.ps1 -ClientId/-ClientSecret, a client id/secret
+      # pair checked on /token (no client certificate). The cert above is still the TLS + JWT signing cert.
+      - AppConfiguration__SelfHosted__RequireClientCertificate=${AIPROXY_REQUIRE_CLIENT_CERT:-true}
+      - AppConfiguration__SelfHosted__ClientId=${AIPROXY_CLIENT_ID:-}
+      - AppConfiguration__SelfHosted__ClientSecret=${AIPROXY_CLIENT_SECRET:-}
       # Force HTTP/1.1 on HTTPS so mTLS client-cert renegotiation works (HTTP/2 forbids it).
       - Kestrel__Endpoints__Https__Protocols=Http1
       - Logging__LogLevel__Default=Information
@@ -38,5 +43,5 @@ services:
       # so it lives under .work/ (git-ignored). Mounted rw so the Config UI's edits persist back to
       # this file (the UI validates, writes it, and hot-reloads - no container restart needed).
       - ./.work/aiconfiguration.json:/app/aiconfiguration.json:rw
-    # No container healthcheck: /health is behind mutual TLS (needs a client cert) and the
-    # base image ships no curl/wget. deploy.ps1 -SmokeTest validates health from the host.
+    # No container healthcheck: the base image ships no curl/wget. /health no longer needs a client
+    # cert (since 2026.2.260.63), so deploy.ps1 -SmokeTest checks it from the host.

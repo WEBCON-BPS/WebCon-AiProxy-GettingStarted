@@ -26,15 +26,11 @@ param parMiClientId string
 @description('Key Vault URI, e.g. https://kvaipxgs1234.vault.azure.net/')
 param parKvUri string
 
-@description('Name of the KV secret holding the PEM (RSA private key) used as JWT signing key. Same cert is also mounted as the TLS cert.')
+@description('Name of the KV secret holding the combined cert+key PEM. Since 2026.2.260.63 the app reads it from KV for all three roles: HTTPS server cert, mTLS trust, JWT signing key.')
 param parSigningSecretName string = 'aiproxy-certificate-pem'
 
 @description('DNS name label -> <label>.<region>.azurecontainer.io')
 param parDnsNameLabel string
-
-@description('Base64 of the combined cert+key PEM, mounted as /app/https/certificate.pem (TLS server cert)')
-@secure()
-param parCertPemBase64 string
 
 @description('Optional Application Insights connection string')
 param parAppInsightsConnectionString string = ''
@@ -48,8 +44,6 @@ param parTags object = {
   purpose: 'aiproxy-getting-started'
   disposable: 'true'
 }
-
-var varCertMountPath = '/app/https'
 
 var varEnv = concat([
   {
@@ -65,15 +59,12 @@ var varEnv = concat([
     value: 'true'
   }
   {
-    name: 'AppConfiguration__SelfHosted__Certificate__Path'
-    value: '${varCertMountPath}/certificate.pem'
-  }
-  {
     name: 'AppConfiguration__AzureKeyVault__Url'
     value: parKvUri
   }
   {
-    name: 'AppConfiguration__AzureKeyVault__SecretName'
+    // Was AppConfiguration__AzureKeyVault__SecretName (removed in 2026.2.260.63).
+    name: 'AppConfiguration__SelfHosted__Certificate__SecretName'
     value: parSigningSecretName
   }
   {
@@ -146,21 +137,6 @@ resource resAci 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
             }
           ]
           environmentVariables: varEnv
-          volumeMounts: [
-            {
-              name: 'aiproxy-certs'
-              mountPath: varCertMountPath
-              readOnly: true
-            }
-          ]
-        }
-      }
-    ]
-    volumes: [
-      {
-        name: 'aiproxy-certs'
-        secret: {
-          'certificate.pem': parCertPemBase64
         }
       }
     ]

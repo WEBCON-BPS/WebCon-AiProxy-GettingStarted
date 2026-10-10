@@ -45,7 +45,7 @@ It is intended for the following scenarios:
 rg-aiproxy-gs-<suffix>
 ├─ Container Registry (Basic)        the Docker Hub image is re-pushed here; ACI pulls it via the MI
 ├─ User-assigned Managed Identity    AcrPull on the ACR + Key Vault Secrets User on the KV
-├─ Key Vault                         aiproxy-certificate-pem (JWT signing key + TLS cert),
+├─ Key Vault                         aiproxy-certificate-pem (TLS cert + mTLS trust + JWT signing key),
 │                                    AiAzureEndpoint, AiAzureApiKey
 ├─ Container Instance (public FQDN)  the AI Proxy — only port 8081 (HTTPS/mTLS) is public; 8080 (HTTP) stays internal
 └─ AI Foundry + project + models     OPTIONAL (-DeployFoundry): gpt-4o-mini + text-embedding-3-small,
@@ -56,8 +56,7 @@ The table below shows how each runtime requirement is satisfied:
 
 | Requirement | Implementation |
 |---|---|
-| **TLS server certificate** (mTLS endpoint) | ACI `secret` volume → `/app/https/certificate.pem` |
-| **JWT signing key** | Key Vault secret `aiproxy-certificate-pem`, read by the application via the Managed Identity (the same certificate as the TLS one) |
+| **TLS server certificate**, **mTLS trust** and **JWT signing key** | One Key Vault secret, `aiproxy-certificate-pem` (combined cert + PKCS#8 key PEM), named by `AppConfiguration__SelfHosted__Certificate__SecretName` and read by the application via the Managed Identity. No certificate file is mounted into the container |
 | **Provider endpoint + key** | Key Vault secrets referenced **by name** in `aiconfiguration.json` (`AiAzureEndpoint`, `AiAzureApiKey`); for `Type: AzureAi`, both are resolved from Key Vault by the Managed Identity |
 | **`aiconfiguration.json`** | **Baked into the image** (`Dockerfile.config`). The application requires `/app/aiconfiguration.json`; when Key Vault is used, the file contains only secret *names*, never secrets |
 | **Azure authentication** | User-assigned Managed Identity (`AZURE_CLIENT_ID`) → `DefaultAzureCredential` |
@@ -86,7 +85,23 @@ WEBCON Portal                         AI Proxy container (ACI)            Azure
 self-signed certificate and requires the client to present that **same** certificate; both sides
 compare the exact SHA-1 thumbprint. The certificate uploaded to the Portal must therefore be
 byte-for-byte identical to the one the container serves. There is no CA chain and no hostname
-validation — the check is purely thumbprint equality.
+validation — the check is purely thumbprint equality. `/health` and `/config-ui` are exempt from the
+client-certificate check; every other endpoint returns `401` without one.
+
+> **Changed in 2026.2.260.63** (and therefore in the default 2026.2.277.65):
+>
+> - `AppConfiguration__AzureKeyVault__SecretName` was **removed**. The certificate secret is now named by
+>   `AppConfiguration__SelfHosted__Certificate__SecretName`, and with `UseAzureKeyVault=true` the app
+>   reads the **TLS server certificate from Key Vault too** (previously it came from a mounted file).
+>   An older deployment that still sets only the old variable fails at startup with
+>   *"... nor the shared AppConfiguration:SelfHosted:Certificate:SecretName is set"*. `aci.bicep` sets the new name.
+> - The three certificate roles can be split: `SelfHosted:Certificates:Https`, `SelfHosted:Certificates:MTLS`
+>   and `Jwt:SigningKey` each accept their own `SecretName` (or `Path`/`Password` in file mode) and fall back
+>   to `SelfHosted:Certificate` when empty. This sample keeps one certificate for all three.
+> - `/health` no longer requires a client certificate (useful for load-balancer and Kubernetes probes).
+> - Instead of mTLS, the proxy can authenticate the Portal with a client id/secret:
+>   `SelfHosted:RequireClientCertificate=false` plus `SelfHosted:ClientId` and `SelfHosted:ClientSecret`
+>   (startup fails if either is missing). This sample keeps mTLS.
 
 ---
 
@@ -128,7 +143,7 @@ URL.
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| `-ImageTag <tag>` | `2026.2.135.35` | Docker Hub tag of `webconbps/aiproxy` to deploy |
+| `-ImageTag <tag>` | `2026.2.277.65` | Docker Hub tag of `webconbps/aiproxy` to deploy |
 | `-Image <ref>` | — | Full image reference override (any registry) |
 | `-DeployFoundry` | off | Also create an AI Foundry + project + models and wire the `AiAzure*` secrets |
 | `-FoundryLocation <region>` | `swedencentral` | Region for the AI Foundry account |
@@ -255,22 +270,24 @@ You can then open:
 `deploy.ps1 -SmokeTest` runs the checks below automatically. To run them manually on Windows, prefer
 PowerShell together with a small C# helper: the bundled `curl.exe` uses the **Schannel** backend
 (which does not support PEM client certificates), and a PowerShell *scriptblock* TLS callback fails on
-background threads in Windows PowerShell 5.1. The helper avoids both issues and mirrors exactly what
-the (C#) Portal does:
+background threads in Windows PowerShell 5.1. The helper avoids both issues, mirrors exactly what the
+(C#) Portal does, and works in both Windows PowerShell 5.1 and PowerShell 7. Because `/health` no
+longer needs a client certificate, mutual TLS is verified on `POST /token`:
 
 ```powershell
-$fqdn = '<fqdn>'; $pfx = '.work/aiproxy-client.pfx'; $pwd = 'Sandbox!1'
+$fqdn = '<fqdn>'; $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new('.work/aiproxy-client.pfx', 'Sandbox!1')
 
-Add-Type -ReferencedAssemblies System.Net.Http -TypeDefinition @'
+$refs = if ($PSVersionTable.PSEdition -eq 'Desktop') { @{ ReferencedAssemblies = 'System.Net.Http' } } else { @{} }
+Add-Type @refs -TypeDefinition @'
 using System; using System.Net.Http; using System.Security.Cryptography.X509Certificates;
 public static class MTls {
-  public static string Get(string url, string pfx, string pwd, bool withCert) {
+  public static string Send(string url, X509Certificate2 cert, bool post) {
     var h = new HttpClientHandler();
     h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => true;   // accept self-signed for the test
-    if (withCert) h.ClientCertificates.Add(new X509Certificate2(pfx, pwd));
+    if (cert != null) h.ClientCertificates.Add(cert);
     using (var cl = new HttpClient(h)) {
       cl.Timeout = TimeSpan.FromSeconds(25);
-      try { var r = cl.GetAsync(url).GetAwaiter().GetResult();
+      try { var r = post ? cl.PostAsync(url, new StringContent("")).GetAwaiter().GetResult() : cl.GetAsync(url).GetAwaiter().GetResult();
             return (int)r.StatusCode + ": " + r.Content.ReadAsStringAsync().GetAwaiter().GetResult(); }
       catch (Exception ex) { var e = ex; while (e.InnerException != null) e = e.InnerException; return "ERR: " + e.Message; }
     }
@@ -278,8 +295,9 @@ public static class MTls {
 }
 '@
 
-"with cert    -> " + [MTls]::Get("https://$fqdn`:8081/health", $pfx, $pwd, $true)    # expect HTTP 200 Healthy
-"without cert -> " + [MTls]::Get("https://$fqdn`:8081/health", $pfx, $pwd, $false)   # expect connection rejected
+"health        -> " + [MTls]::Send("https://$fqdn`:8081/health", $null,  $false)   # expect 200 Healthy (no cert needed)
+"token no cert -> " + [MTls]::Send("https://$fqdn`:8081/token",  $null,  $true)    # expect 401 (mTLS enforced)
+"token cert    -> " + [MTls]::Send("https://$fqdn`:8081/token",  $cert,  $true)    # expect 400 invalid_request (cert accepted)
 
 # What certificate does the endpoint actually serve? (detects a TLS-terminating proxy / wrong cert)
 $tcp = [System.Net.Sockets.TcpClient]::new($fqdn, 8081)
@@ -315,12 +333,12 @@ Foundry are *soft-deleted*; to release their names immediately, the script print
 |---|---|
 | **`403 ... Virtual Network/Firewall rules`** immediately after `-DeployFoundry` | The Cognitive Services firewall rule for the container IP has not propagated yet. **Wait approximately 10–30 minutes** for it to clear on its own. Do not toggle the firewall. |
 | **`403 ... Virtual Network/Firewall rules`** against *your own* AI resource | Your Azure OpenAI / Foundry resource has `defaultAction = Deny` and the container's IP is not allowed. Run `az cognitiveservices account network-rule add -g <rg> -n <res> --ip-address <container ipAddress.ip>`. The IP changes only if the container group is recreated. |
-| **`No RSA private key found in PEM`** on `/token` or at startup | The signing-key secret must be a **PKCS#8** PEM (`BEGIN PRIVATE KEY`), which `deploy.ps1` generates. In addition, `AzureKeyVault__SecretName` must point at the **certificate/key** secret, not at the `aiconfiguration.json` secret. |
+| **`No RSA private key found in PEM`** on `/token` or at startup | The signing-key secret must be a **PKCS#8** PEM (`BEGIN PRIVATE KEY`), which `deploy.ps1` generates. In addition, `SelfHosted__Certificate__SecretName` must point at the **certificate/key** secret, not at the `aiconfiguration.json` secret. |
+| **`... nor the shared AppConfiguration:SelfHosted:Certificate:SecretName is set`** at startup | The deployment still uses `AppConfiguration__AzureKeyVault__SecretName`, which was removed in 2026.2.260.63. Rename it to `AppConfiguration__SelfHosted__Certificate__SecretName` (the current `aci.bicep` does). |
 | **`FileNotFoundException: /app/aiconfiguration.json`** | The file must exist in the container; here it is baked into the image. Key Vault does not supply it. |
 | **Mutual TLS: the certificate is correct but the connection still fails** | Validation is an **exact SHA-1 thumbprint** match. If anything terminates TLS between the Portal and the container (Application Gateway, Front Door, APIM, a reverse proxy, or Container Apps ingress), the Portal sees that hop's certificate and/or the client certificate is stripped, so the connection fails even with the correct certificate. Plain ACI does not terminate TLS. Compare the served thumbprint (see [Verification](#verification)) with the uploaded one, and **run the check from the Portal host**. |
-| **No container logs without a certificate; logs appear with a certificate** | Expected. Without a client certificate, the TLS layer rejects the connection before it reaches the application. A `401` *with* a certificate originates from the authorization layer (a missing Bearer token), not from a certificate problem. |
+| **`401` without a certificate** | Expected on every endpoint except `/health` and `/config-ui`. A **wrong** certificate (thumbprint mismatch) drops the TLS connection instead. A `401` *with* the correct certificate originates from the authorization layer (a missing Bearer token), not from a certificate problem. |
 | **`404` from the AI provider** after unblocking the firewall | `AiAzureEndpoint` must end with `/openai/v1/`, and each `ModelName` in `aiconfiguration.json` must equal the **deployment** name in your Foundry/OpenAI resource. |
-| **`dbcontext` health reported as "degraded"** | Expected in SelfHosted mode with no SQL database — database access is stubbed and is not required for the mTLS/token flow. |
 
 ---
 
@@ -332,7 +350,7 @@ AzureContainerInstances/
 ├── teardown.ps1                     delete the resource group + clean up local certs
 ├── bicep/
 │   ├── infra.bicep                  Container Registry + Managed Identity + Key Vault + role assignments
-│   ├── aci.bicep                    the Container Instance (env, cert `secret` volume, MI, public FQDN)
+│   ├── aci.bicep                    the Container Instance (env, MI, public FQDN)
 │   └── foundry.bicep                optional AI Foundry + project + models, firewalled to the container
 └── config/
     ├── Dockerfile.config            thin layer that bakes aiconfiguration.json onto the base image
