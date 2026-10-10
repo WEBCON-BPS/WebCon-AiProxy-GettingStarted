@@ -224,13 +224,14 @@ if ($SmokeTest) {
   # in PowerShell and passed in, so the helper compiles on both Windows PowerShell 5.1 and PowerShell 7.
   # /health needs no client cert (since 2026.2.260.63); /token proves the Portal auth mode end to end.
   $refs = if ($PSVersionTable.PSEdition -eq 'Desktop') { @{ ReferencedAssemblies = 'System.Net.Http' } } else { @{} }
-  if (-not ('AiProxyCheck' -as [type])) { Add-Type @refs -TypeDefinition @'
+  if (-not ('AiProxyPinned' -as [type])) { Add-Type @refs -TypeDefinition @'
 using System; using System.Collections.Generic; using System.Net.Http; using System.Security.Cryptography.X509Certificates;
-public static class AiProxyCheck {
+public static class AiProxyPinned {
   // form == null -> GET; otherwise POST (form-urlencoded) with the ConfigDbGuid header the /token endpoint requires.
-  public static string Send(string url, X509Certificate2 cert, Dictionary<string,string> form) {
+  // The server cert is pinned to the generated thumbprint (like the Portal), so a secret is never sent to an impostor.
+  public static string Send(string url, string pin, X509Certificate2 cert, Dictionary<string,string> form) {
     var h = new HttpClientHandler();
-    h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => true;
+    h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => c != null && string.Equals(c.GetCertHashString(), pin, StringComparison.OrdinalIgnoreCase);
     if (cert != null) h.ClientCertificates.Add(cert);
     using (var cl = new HttpClient(h)) {
       cl.Timeout = TimeSpan.FromSeconds(25);
@@ -252,18 +253,18 @@ public static class AiProxyCheck {
 
   Write-Host "Smoke test..." -ForegroundColor Cyan
   for ($i = 1; $i -le 20; $i++) {
-    $res = [AiProxyCheck]::Send("$endpoint/health", $null, $null)
+    $res = [AiProxyPinned]::Send("$endpoint/health", $thumbprint, $null, $null)
     Write-Host "  /health, attempt $i -> $res"
     if ($res -like 'HTTP 200*') { break }
     Start-Sleep -Seconds 6
   }
   $form = { param($id, $secret) $d = [System.Collections.Generic.Dictionary[string,string]]::new(); $d['grant_type'] = 'client_credentials'; $d['client_id'] = $id; $d['client_secret'] = $secret; $d }
   if ($useClientCredentials) {
-    Write-Host "  /token, wrong secret, no cert -> $([AiProxyCheck]::Send("$endpoint/token", $null, (& $form $ClientId 'wrong')))  (expected: HTTP 401)"
-    Write-Host "  /token, ClientId/Secret, no cert -> $([AiProxyCheck]::Send("$endpoint/token", $null, (& $form $ClientId $ClientSecret)))  (expected: HTTP 200 + access_token)"
+    Write-Host "  /token, wrong secret, no cert -> $([AiProxyPinned]::Send("$endpoint/token", $thumbprint, $null, (& $form $ClientId 'wrong')))  (expected: HTTP 401)"
+    Write-Host "  /token, ClientId/Secret, no cert -> $([AiProxyPinned]::Send("$endpoint/token", $thumbprint, $null, (& $form $ClientId $ClientSecret)))  (expected: HTTP 200 + access_token)"
   } else {
-    Write-Host "  /token without cert -> $([AiProxyCheck]::Send("$endpoint/token", $null, (& $form 'x' 'x')))  (expected: HTTP 401 - mTLS enforced)"
-    Write-Host "  /token with cert    -> $([AiProxyCheck]::Send("$endpoint/token", $cert, (& $form 'x' 'x')))  (expected: HTTP 200 + access_token - cert accepted)"
+    Write-Host "  /token without cert -> $([AiProxyPinned]::Send("$endpoint/token", $thumbprint, $null, (& $form 'x' 'x')))  (expected: HTTP 401 - mTLS enforced)"
+    Write-Host "  /token with cert    -> $([AiProxyPinned]::Send("$endpoint/token", $thumbprint, $cert, (& $form 'x' 'x')))  (expected: HTTP 200 + access_token - cert accepted)"
   }
 
   # What cert does the endpoint actually serve? (sanity check the thumbprint)

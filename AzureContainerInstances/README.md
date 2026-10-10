@@ -281,9 +281,9 @@ $refs = if ($PSVersionTable.PSEdition -eq 'Desktop') { @{ ReferencedAssemblies =
 Add-Type @refs -TypeDefinition @'
 using System; using System.Net.Http; using System.Security.Cryptography.X509Certificates;
 public static class MTls {
-  public static string Send(string url, X509Certificate2 cert, bool post) {
+  public static string Send(string url, string pin, X509Certificate2 cert, bool post) {
     var h = new HttpClientHandler();
-    h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => true;   // accept self-signed for the test
+    h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => c != null && string.Equals(c.GetCertHashString(), pin, StringComparison.OrdinalIgnoreCase);   // pin the server cert, like the Portal
     if (cert != null) h.ClientCertificates.Add(cert);
     using (var cl = new HttpClient(h)) {
       cl.Timeout = TimeSpan.FromSeconds(25);
@@ -295,9 +295,9 @@ public static class MTls {
 }
 '@
 
-"health        -> " + [MTls]::Send("https://$fqdn`:8081/health", $null,  $false)   # expect 200 Healthy (no cert needed)
-"token no cert -> " + [MTls]::Send("https://$fqdn`:8081/token",  $null,  $true)    # expect 401 (mTLS enforced)
-"token cert    -> " + [MTls]::Send("https://$fqdn`:8081/token",  $cert,  $true)    # expect 400 invalid_request (cert accepted)
+"health        -> " + [MTls]::Send("https://$fqdn`:8081/health", $cert.Thumbprint, $null,  $false)   # expect 200 Healthy (no cert needed)
+"token no cert -> " + [MTls]::Send("https://$fqdn`:8081/token", $cert.Thumbprint, $null,  $true)    # expect 401 (mTLS enforced)
+"token cert    -> " + [MTls]::Send("https://$fqdn`:8081/token", $cert.Thumbprint, $cert,  $true)    # expect 400 invalid_request (cert accepted)
 
 # What certificate does the endpoint actually serve? (detects a TLS-terminating proxy / wrong cert)
 $tcp = [System.Net.Sockets.TcpClient]::new($fqdn, 8081)

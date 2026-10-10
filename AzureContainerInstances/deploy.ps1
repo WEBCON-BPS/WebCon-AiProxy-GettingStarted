@@ -280,12 +280,13 @@ if ($SmokeTest) {
   # Since 2026.2.260.63 /health is exempt from the client-cert check, so mTLS is proven on POST /token:
   # no cert -> 401 (mTLS layer), matching cert -> 400 invalid_request (past mTLS, just no credentials).
   $refs = if ($PSVersionTable.PSEdition -eq 'Desktop') { @{ ReferencedAssemblies = 'System.Net.Http' } } else { @{} }
-  if (-not ('AiProxyMtls' -as [type])) { Add-Type @refs -TypeDefinition @'
+  if (-not ('AiProxyPinnedMtls' -as [type])) { Add-Type @refs -TypeDefinition @'
 using System; using System.Net.Http; using System.Security.Cryptography.X509Certificates;
-public static class AiProxyMtls {
-  public static string Send(string url, X509Certificate2 cert, bool post) {
+public static class AiProxyPinnedMtls {
+  // The server cert is pinned to the generated thumbprint (like the Portal).
+  public static string Send(string url, string pin, X509Certificate2 cert, bool post) {
     var h = new HttpClientHandler();
-    h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => true;
+    h.ServerCertificateCustomValidationCallback = (m,c,ch,e) => c != null && string.Equals(c.GetCertHashString(), pin, StringComparison.OrdinalIgnoreCase);
     if (cert != null) h.ClientCertificates.Add(cert);
     using (var cl = new HttpClient(h)) {
       cl.Timeout = TimeSpan.FromSeconds(25);
@@ -302,13 +303,13 @@ public static class AiProxyMtls {
 
   Write-Host "Smoke test (waiting for container to come up)..." -ForegroundColor Cyan
   for ($i = 1; $i -le 20; $i++) {
-    $res = [AiProxyMtls]::Send("$base/health", $null, $false)
+    $res = [AiProxyPinnedMtls]::Send("$base/health", $thumbprint, $null, $false)
     Write-Host "  /health, attempt $i -> $res"
     if ($res -like 'HTTP 200*') { break }
     Start-Sleep -Seconds 15
   }
-  Write-Host "  POST /token without cert -> $([AiProxyMtls]::Send("$base/token", $null, $true))  (expected: HTTP 401 - mTLS enforced)"
-  Write-Host "  POST /token with cert    -> $([AiProxyMtls]::Send("$base/token", $cert, $true))  (expected: HTTP 400 invalid_request - cert accepted)"
+  Write-Host "  POST /token without cert -> $([AiProxyPinnedMtls]::Send("$base/token", $thumbprint, $null, $true))  (expected: HTTP 401 - mTLS enforced)"
+  Write-Host "  POST /token with cert    -> $([AiProxyPinnedMtls]::Send("$base/token", $thumbprint, $cert, $true))  (expected: HTTP 400 invalid_request - cert accepted)"
 
   # What cert does the endpoint actually serve? (detects a TLS-terminating proxy / wrong cert)
   try {
